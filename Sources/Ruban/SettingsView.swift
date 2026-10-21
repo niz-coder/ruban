@@ -202,7 +202,7 @@ private struct ShortcutsTab: View {
                     Text("Désactivé").tag(0)
                 }
                 if let conflict = MacSetup.swipeConflict(fingers: s.swipeFingers) {
-                    Label(conflict, systemImage: "exclamationmark.triangle.fill")
+                    Label(conflict + " En attendant, Ruban laisse ce geste à macOS.", systemImage: "exclamationmark.triangle.fill")
                         .font(.caption).foregroundStyle(.orange)
                         .fixedSize(horizontal: false, vertical: true)
                     Button("Ouvrir les réglages du trackpad") {

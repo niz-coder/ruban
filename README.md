@@ -73,8 +73,9 @@ tiling as soon as it is granted.
 
 ### Free the three-finger swipe
 
-By default macOS uses three- or four-finger horizontal swipes to switch Spaces. If it keeps doing so,
-both macOS and Ruban react to the same swipe. Go to System Settings → Trackpad → More Gestures →
+By default macOS uses three- or four-finger horizontal swipes to switch Spaces. Two apps reacting to
+one swipe can leave macOS stuck halfway through a Space switch, so while macOS still uses the gesture,
+Ruban leaves it alone, explains why once, and picks it back up as soon as it is free. Go to System Settings → Trackpad → More Gestures →
 *Swipe between full-screen applications* and choose **four fingers** (or turn it off), or set Ruban
 to four fingers instead. Ruban's *Mac Setup* tab points out this and other conflicts (Rectangle,
 Magnet, AeroSpace, Stage Manager…).

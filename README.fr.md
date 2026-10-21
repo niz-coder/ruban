@@ -68,8 +68,9 @@ Confidentialité et sécurité → Accessibilité → active Ruban. Il démarre 
 
 ### Libérer le glissé à trois doigts
 
-Par défaut, macOS change de bureau avec un glissé horizontal à trois ou quatre doigts : sans
-réglage, macOS et Ruban réagissent tous les deux. Réglages Système → Trackpad → Plus de gestes →
+Par défaut, macOS change de bureau avec un glissé horizontal à trois ou quatre doigts. Si macOS et
+Ruban réagissent au même geste, macOS peut rester bloqué en plein changement de bureau : tant que
+macOS utilise ce geste, Ruban le lui laisse, l'explique une fois, et le reprend dès qu'il est libre. Réglages Système → Trackpad → Plus de gestes →
 *Balayer entre les apps en plein écran* : choisis **quatre doigts** (ou désactive-le), ou règle Ruban
 sur quatre doigts. L'onglet *Mac Setup* de Ruban signale ce conflit et d'autres (Rectangle, Magnet,
 AeroSpace, Stage Manager…).

@@ -178,6 +178,12 @@ enum WindowList {
         return rect
     }
 
+    /// Whether a window is on screen in the current Space (a parked window still is).
+    static func isOnScreen(_ id: WindowID) -> Bool {
+        guard let list = CGWindowListCopyWindowInfo([.optionIncludingWindow], CGWindowID(id)) as? [[String: Any]] else { return false }
+        return (list.first?[kCGWindowIsOnscreen as String] as? Bool) ?? false
+    }
+
     /// Every window that still exists, on any Space.
     static func all() -> Set<WindowID> { ids([.optionAll]) }
 

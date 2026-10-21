@@ -61,9 +61,11 @@ final class WindowManager {
     private var stubbornCheck: DispatchWorkItem?
     private var sizeRetried = Set<WindowID>()
     private var suspectMoves: [WindowID: Int] = [:]
-    /// Windows that were judged not tileable (dialogs, panels), with how many times. Re-judged a few times
-    /// because some apps finish setting up a new window after it appears.
-    private var rejected: [WindowID: Int] = [:]
+    /// Windows judged not tileable (dialogs, panels, full-screen windows), with when. They are judged
+    /// again every few seconds: a window leaving full screen, or one its app finishes setting up,
+    /// becomes tileable.
+    private var rejected: [WindowID: CFTimeInterval] = [:]
+    private let rejudgeAfter = 3.0
     /// Set when a setting changes which windows tile: the next pass asks every app again.
     var needsFullScan = true
     private var pendingVanish: [WindowID: Int] = [:]
@@ -87,6 +89,7 @@ final class WindowManager {
         installWorkspaceObservers()
         reconcile()
         heartbeat = Timer.scheduledTimer(withTimeInterval: 2.5, repeats: true) { [weak self] _ in self?.reconcile() }
+        watchSwipeConflict()
     }
 
     /// Stops tiling. Parked windows come back on screen so nothing is left hidden at the edge.
@@ -101,6 +104,8 @@ final class WindowManager {
         running = false
         heartbeat?.invalidate()
         heartbeat = nil
+        conflictTimer?.invalidate()
+        conflictTimer = nil
         for t in workspaceTokens { NSWorkspace.shared.notificationCenter.removeObserver(t) }
         workspaceTokens.removeAll()
         NotificationCenter.default.removeObserver(self)
@@ -160,6 +165,11 @@ final class WindowManager {
         workspaceTokens.append(nc.addObserver(forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
             self?.needsFullScan = true
             self?.scheduleReconcile(after: 0.25)
+            // Windows leaving full screen finish their animation after the Space has changed.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
+                self?.needsFullScan = true
+                self?.reconcile()
+            }
         })
         workspaceTokens.append(nc.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
             TrackpadSwipe.shared.restart()
@@ -268,7 +278,8 @@ final class WindowManager {
             guard let ids = onScreenByPID[pid], !ids.isEmpty else { continue }
             // Asking an app for its windows is a slow cross-process call. The window server's list is
             // nearly free, so only ask apps that show a window we have not judged yet.
-            let unknown = ids.contains { windows[$0] == nil && (rejected[$0] ?? 0) < 3 }
+            let now = CACurrentMediaTime()
+            let unknown = ids.contains { windows[$0] == nil && now - (rejected[$0] ?? 0) > rejudgeAfter }
             if !full && !unknown {
                 for id in ids { if let w = windows[id] { tileable[id] = (w.element, app) } }
                 continue
@@ -281,11 +292,11 @@ final class WindowManager {
                     tileable[id] = (w, app)
                     rejected[id] = nil
                 } else {
-                    rejected[id, default: 0] += 1
+                    rejected[id] = now
                 }
             }
             // On-screen windows the app does not list (overlays, helper panels) are never tiles.
-            for id in ids.subtracting(seen) where windows[id] == nil { rejected[id, default: 0] += 1 }
+            for id in ids.subtracting(seen) where windows[id] == nil { rejected[id] = now }
         }
         for pid in observers.keys where !livePIDs.contains(pid) {
             observers[pid]?.invalidate()
@@ -306,6 +317,11 @@ final class WindowManager {
             guard let key = stripKeyOf[id], currentKeys.contains(key) else { continue } // lives on another Space
             vanished.append(id)
         }
+        // If not a single window of a strip is visible, we are looking at another Space (an app in
+        // full screen, a Space switch under way, Mission Control) even when the Space id has not
+        // caught up yet. Its windows are still there: keep the strip whole.
+        let visibleStrips = Set(tileable.keys.compactMap { stripKeyOf[$0] })
+        vanished.removeAll { id in stripKeyOf[id].map { !visibleStrips.contains($0) } ?? true }
 
         // Tracked windows that now show up on another strip's Space (moved by Mission Control).
         // Space switches are not atomic, so a move only counts once two passes agree.
@@ -473,7 +489,9 @@ final class WindowManager {
     }
 
     private func focus(_ id: WindowID) {
-        guard let w = windows[id] else { return }
+        // Focusing a window on another Space makes macOS switch Spaces, possibly in the middle of a
+        // gesture of its own. Only windows on screen here get focus.
+        guard let w = windows[id], present.contains(id), WindowList.isOnScreen(id) else { return }
         pendingFocus = (id, CACurrentMediaTime() + 0.6)
         if !SkyLight.focus(pid: w.pid, window: id) {
             NSRunningApplication(processIdentifier: w.pid)?.activate()
@@ -788,14 +806,14 @@ final class WindowManager {
     /// A trackpad swipe moved by `fraction` of the trackpad's width (negative = fingers went left).
     /// The strip follows the fingers: fingers to the left bring in the windows on the right.
     func swipe(by fraction: Double) {
-        guard running, let d = display(containing: mouseLocationAX) else { return }
+        guard running, !swipeBlocked(), let d = display(containing: mouseLocationAX) else { return }
         let sign: Double = settings.invertScroll ? 1 : -1
         scroll(by: sign * fraction * d.params.inner.width * swipeGain)
     }
 
     /// Fingers lifted: a flick carries on to the next column or two, a slow release settles nearby.
     func endSwipe(velocity: Double) {
-        guard running, let d = display(containing: mouseLocationAX) else { return }
+        guard running, !swipeBlocked(), let d = display(containing: mouseLocationAX) else { return }
         let sign: Double = settings.invertScroll ? 1 : -1
         endScroll(fling: sign * velocity * d.params.inner.width * swipeGain)
         Log.write("swipe ended (speed \(String(format: "%.1f", velocity))), focused column \(strips[d.key]?.focused ?? -1)")
@@ -866,6 +884,60 @@ final class WindowManager {
         if springs.isEmpty && dirty.isEmpty {
             clock.stop()
             lastTick = 0
+        }
+    }
+
+    // MARK: Swipe conflict with macOS
+
+    /// True while macOS also turns a sideways swipe with Ruban's finger count into a Space switch.
+    /// Both reacting to one gesture can leave macOS stuck mid-switch on a black screen, so Ruban
+    /// steps aside until the gesture is free, and says so once.
+    private(set) var swipeConflict = false
+    private var conflictTimer: Timer?
+    private var conflictExplained = false
+
+    private func watchSwipeConflict() {
+        refreshSwipeConflict()
+        conflictTimer?.invalidate()
+        conflictTimer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in self?.refreshSwipeConflict() }
+    }
+
+    private func refreshSwipeConflict() {
+        let conflict = MacSetup.swipeConflict(fingers: settings.swipeFingers) != nil
+        if conflict != swipeConflict {
+            Log.write(conflict ? "swipe: macOS uses the same gesture, Ruban leaves it to macOS" : "swipe: the gesture is free, Ruban takes it back")
+        }
+        swipeConflict = conflict
+        if !conflict { conflictExplained = false }
+    }
+
+    private func swipeBlocked() -> Bool {
+        guard swipeConflict else { return false }
+        if !conflictExplained {
+            conflictExplained = true
+            DispatchQueue.main.async { [weak self] in self?.explainSwipeConflict() }
+        }
+        return true
+    }
+
+    private func explainSwipeConflict() {
+        let n = settings.swipeFingers
+        let alert = NSAlert()
+        alert.messageText = "macOS utilise aussi le glissé à \(n) doigts"
+        alert.informativeText = """
+            Quand macOS et Ruban réagissent au même geste, macOS peut changer de bureau en plein milieu, \
+            au point de laisser l'écran noir. En attendant, Ruban lui laisse ce geste.
+
+            \(MacSetup.swipeConflict(fingers: n) ?? "")
+
+            Ruban reprendra le glissé tout seul dès que le réglage sera changé.
+            """
+        alert.addButton(withTitle: "Ouvrir les réglages du trackpad")
+        alert.addButton(withTitle: "Plus tard")
+        NSApp.activate()
+        if alert.runModal() == .alertFirstButtonReturn,
+           let url = URL(string: "x-apple.systempreferences:com.apple.Trackpad-Settings.extension") {
+            NSWorkspace.shared.open(url)
         }
     }
 
