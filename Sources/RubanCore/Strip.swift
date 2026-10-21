@@ -68,11 +68,7 @@ public struct Strip: Equatable, Sendable {
     /// Inserts a window as a new column right after `index` (or at the end) and returns its column index.
     @discardableResult
     public mutating func insert(_ window: WindowID, width: Double, after index: Int?) -> Int {
-        var at = index.map { $0 + 1 } ?? columns.count
-        at = min(max(at, 0), columns.count)
-        // Never slide in between a left-pinned column and the edge, or past a right-pinned one.
-        if at < columns.count, columns[at].pinned == .left { at += 1 }
-        while at > 0, columns[at - 1].pinned == .right { at -= 1 }
+        let at = insertionIndex(index.map { $0 + 1 } ?? columns.count)
         let wasEmpty = columns.isEmpty
         columns.insert(Column(window: window, width: width), at: at)
         if wasEmpty { focused = 0 } else if focused >= at { focused += 1 }

@@ -48,6 +48,7 @@ final class WindowManager {
     let animator = Animator()
     let indicator = StripIndicator()
     let border = FocusBorder()
+    let dropPreview = DropPreview()
     let session = SessionStore()
 
     private var reconcileWork: DispatchWorkItem?
@@ -58,6 +59,7 @@ final class WindowManager {
     private var bootstrapped = false
     private var pendingFocus: (id: WindowID, until: CFTimeInterval)?
     private var stubbornCheck: DispatchWorkItem?
+    private var sizeRetried = Set<WindowID>()
     private var suspectMoves: [WindowID: Int] = [:]
     /// Windows that were judged not tileable (dialogs, panels), with how many times. Re-judged a few times
     /// because some apps finish setting up a new window after it appears.
@@ -70,7 +72,7 @@ final class WindowManager {
         animator.apply = { [weak self] id, frame in self?.place(id, virtual: frame) }
         animator.didFinish = { [weak self] ids in self?.animationFinished(ids) }
         indicator.onSelect = { [weak self] key, column in self?.focusColumn(column, in: key) }
-        indicator.onReorder = { [weak self] key, from, to in self?.reorder(from: from, to: to, in: key) }
+        indicator.onDrop = { [weak self] key, from, drop in self?.dropColumn(from, drop, in: key) }
     }
 
     // MARK: Lifecycle
@@ -489,15 +491,6 @@ final class WindowManager {
         showIndicator(key)
     }
 
-    private func reorder(from: Int, to: Int, in key: String) {
-        guard var strip = strips[key] else { return }
-        strip.moveColumn(from: from, to: to)
-        strips[key] = strip
-        layout(key, animated: true)
-        showIndicator(key)
-        saveSession()
-    }
-
     // MARK: Layout
 
     /// Re-applies the layout after a setting changed (gap, centring, border).
@@ -597,8 +590,20 @@ final class WindowManager {
     /// A window that refuses its size (a minimum width, a character grid) keeps the size it insists on,
     /// and its column widens to match so it never overlaps the next one. No fighting, no twitching.
     private func acceptStubbornSize(_ id: WindowID, actual: CGRect) {
-        guard running, !animator.isRunning, let w = windows[id], let expected = applied[id],
-              !actual.isClose(to: expected, tolerance: 2) else { return }
+        guard running, !animator.isRunning, let w = windows[id], let expected = applied[id] else { return }
+        guard !actual.isClose(to: expected, tolerance: 2) else {
+            sizeRetried.remove(id)
+            return
+        }
+        // A window caught mid-change (just dropped, still finishing a resize) gets one more try
+        // before we decide it really refuses that size.
+        if !sizeRetried.contains(id) {
+            sizeRetried.insert(id)
+            AXWorker.shared.setFrame(w.element, window: id, pid: w.pid, frame: expected, resize: true)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in self?.checkStubbornSizes([id]) }
+            return
+        }
+        sizeRetried.remove(id)
         applied[id] = actual
         virtual[id] = virtual[id].map { CGRect(origin: $0.origin, size: actual.size) }
         // Only grow: a window wider than asked has a minimum size. Narrower is harmless.
@@ -864,17 +869,57 @@ final class WindowManager {
         }
     }
 
-    /// A window moved or resized. If the user is dragging it, wait for the mouse to come up.
+    /// A window moved or resized while the mouse is down: the user is dragging it. Follow the drag,
+    /// showing where the window would land, until the mouse comes up.
     func windowMoved(_ element: AXUIElement) {
         guard running, !animator.isRunning, CACurrentMediaTime() > ignoreMovesUntil,
               NSEvent.pressedMouseButtons & 1 != 0, let id = element.windowID, windows[id] != nil else { return }
         guard dragTimer == nil else { return }
-        dragTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] t in
-            guard NSEvent.pressedMouseButtons & 1 == 0 else { return }
-            t.invalidate()
-            self?.dragTimer = nil
-            self?.finishDrag(id)
+        let timer = Timer(timeInterval: 1.0 / 60, repeats: true) { [weak self] t in
+            guard let self else { return t.invalidate() }
+            if NSEvent.pressedMouseButtons & 1 == 0 {
+                t.invalidate()
+                self.dragTimer = nil
+                self.dropPreview.hide()
+                // Let macOS finish the drag before the window gets its new place and size.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { self.finishDrag(id) }
+            } else if let drop = self.pendingDrop(for: id) {
+                self.dropPreview.show(frameAX: drop.frame, below: id)
+            } else {
+                self.dropPreview.hide()
+            }
         }
+        RunLoop.main.add(timer, forMode: .common)
+        dragTimer = timer
+    }
+
+    /// What letting go of a dragged window right now would do: the strip it lands on, the drop,
+    /// and the frame it would end up with. Nil while the window is being resized rather than moved,
+    /// or when the drop would put it back where it was.
+    private func pendingDrop(for id: WindowID) -> (key: String, drop: Drop, frame: CGRect)? {
+        guard let source = stripKeyOf[id], let old = applied[id], let now = WindowList.bounds(of: id) else { return nil }
+        guard abs(now.width - old.width) <= 4, abs(now.height - old.height) <= 4,
+              abs(now.minX - old.minX) > 4 || abs(now.minY - old.minY) > 4 else { return nil }
+        let mouse = mouseLocationAX
+        guard let d = display(containing: mouse) else { return nil }
+        let strip = strips[d.key] ?? Strip()
+        var frames = Layout.frames(strip, present: present, d.params, geometry: Layout.geometry(strip, present: present, d.params), scroll: strip.scroll)
+        frames[id] = nil
+        let drop = Layout.dropTarget(at: mouse, moving: id, in: strip, frames: frames)
+
+        // Try it on a copy to see where the window would end up once the strip has settled.
+        var result = strip
+        if d.key == source {
+            guard result.move(id, to: drop) else { return nil }
+        } else {
+            let width = strips[source].flatMap { s in s.columnIndex(of: id).map { s.columns[$0].width } } ?? settings.defaultWidth
+            result.place(id, at: drop, width: width)
+        }
+        let shown = present.union([id])
+        let g = Layout.geometry(result, present: shown, d.params)
+        let scroll = Layout.revealScroll(g, focused: result.focused, current: strip.scroll, mode: settings.centreMode)
+        guard let frame = Layout.frames(result, present: shown, d.params, geometry: g, scroll: scroll)[id] else { return nil }
+        return (d.key, drop, frame)
     }
 
     private func finishDrag(_ id: WindowID) {
@@ -887,40 +932,49 @@ final class WindowManager {
             strip.columns[ci].width = Layout.fraction(forWidth: frame.width, inner: d.params.inner.width, gap: d.params.gap)
             strip.columns[ci].widthBeforeFull = nil
             strips[key] = strip
-        } else if abs(frame.minX - old.minX) > 4 || abs(frame.minY - old.minY) > 4 {
-            // Dragged by its title bar: drop it where the mouse is.
-            let mouse = mouseLocationAX
-            if let target = display(containing: mouse), target.key != key {
+        } else if let landing = pendingDrop(for: id) {
+            // Dragged by its title bar: into a stack, or as a column of its own, wherever it was dropped.
+            if landing.key == key {
+                strip.move(id, to: landing.drop)
+                strips[key] = strip
+            } else {
+                let width = strip.columns[ci].width
                 strips[key]?.remove(id)
-                add(id, to: target.key)
+                var target = strips[landing.key] ?? Strip()
+                target.place(id, at: landing.drop, width: width)
+                strips[landing.key] = target
+                stripKeyOf[id] = landing.key
                 applied[id] = frame
                 virtual[id] = frame
                 layout(key, animated: true)
-                layout(target.key, animated: true)
+                layout(landing.key, animated: true)
                 saveSession()
                 return
             }
-            if let dest = strip.columns.indices.first(where: { j in
-                j != ci && strip.columns[j].windows.contains { other in
-                    guard present.contains(other), let f = applied[other] else { return false }
-                    return mouse.x >= f.minX && mouse.x <= f.maxX
-                }
-            }) {
-                if strip.columns[ci].windows.count == 1 {
-                    strip.moveColumn(from: ci, to: dest)
-                } else {
-                    strip.focused = ci
-                    strip.columns[ci].active = strip.columns[ci].windows.firstIndex(of: id) ?? 0
-                    _ = strip.popOut(dest > ci ? 1 : -1)
-                    if let now = strip.columnIndex(of: id) { strip.moveColumn(from: now, to: dest) }
-                }
-                if let now = strip.columnIndex(of: id) { strip.focused = now }
-            }
-            strips[key] = strip
         }
         applied[id] = frame
         virtual[id] = frame
         layout(key, animated: true)
+        saveSession()
+    }
+
+    /// A column dragged in the strip indicator was dropped onto another column (merge into its
+    /// stack) or between two (reorder).
+    private func dropColumn(_ from: Int, _ drop: StripBarView.BarDrop, in key: String) {
+        guard var strip = strips[key], strip.columns.indices.contains(from) else { return }
+        let target: Drop
+        switch drop {
+        case .stack(let into):
+            guard strip.columns.indices.contains(into) else { return }
+            target = .stack(column: strip.columns[into].id, before: nil)
+        case .before(let column):
+            target = .column(before: column.flatMap { strip.columns.indices.contains($0) ? strip.columns[$0].id : nil })
+        }
+        guard strip.move(column: strip.columns[from].id, to: target) else { return }
+        strips[key] = strip
+        if let id = strip.focusedWindow { focus(id) }
+        layout(key, animated: true)
+        showIndicator(key)
         saveSession()
     }
 

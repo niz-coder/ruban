@@ -31,12 +31,17 @@ longer, and you scroll through it with the keyboard or a three-finger swipe.
   goes to the next column.
 - **Widths.** Cycle through preset widths (33 / 50 / 66 % by default, configurable), toggle full
   width, centre a column, nudge it wider or narrower.
+- **Drag and drop.** Drag a window by its title bar and drop it onto another window to stack it there
+  (above or below, depending on which half you drop on), or near a window's edge or between two
+  windows to give it a column of its own. A translucent preview shows where it will land before you
+  let go. Works across displays too.
 - **Stacks and tabs.** Put several windows in one column, resize them inside the stack, or turn the
   stack into a tabbed column.
 - **Pinned columns.** Keep one window at the left or right edge while the rest scrolls beside it.
 - **Strip indicator.** A frosted bar with one tile per column appears while you move around. Click
-  a tile to jump there, drag it to reorder.
-- **Mouse.** Drag a window by its title bar to reorder the strip; resize it to change its column width.
+  a tile to jump there; drag it onto another tile to merge the two columns into one stack, or between
+  two tiles to move the column there.
+- **Mouse resize.** Resize a window by hand and its column takes the new width.
 - **One strip per display and per Space**, and a shortcut to send a window to the next display.
 - **Floating.** Dialogs, Quick Look and fixed-size windows (Calculator) float on their own. Pick
   apps that should always float, or float any window with a shortcut.

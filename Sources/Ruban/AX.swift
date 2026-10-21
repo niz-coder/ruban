@@ -170,6 +170,14 @@ enum WindowList {
         return out
     }
 
+    /// A window's frame as the window server sees it, without asking its app (which may be busy).
+    static func bounds(of id: WindowID) -> CGRect? {
+        guard let list = CGWindowListCopyWindowInfo([.optionIncludingWindow], CGWindowID(id)) as? [[String: Any]],
+              let dict = list.first?[kCGWindowBounds as String] as? NSDictionary,
+              let rect = CGRect(dictionaryRepresentation: dict as CFDictionary) else { return nil }
+        return rect
+    }
+
     /// Every window that still exists, on any Space.
     static func all() -> Set<WindowID> { ids([.optionAll]) }
 

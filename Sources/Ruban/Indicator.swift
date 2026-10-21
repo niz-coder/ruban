@@ -2,10 +2,11 @@ import AppKit
 import RubanCore
 
 /// The frosted bar that shows every column of the strip while you move around.
-/// Hold the modifiers and it stays; click a tile to jump there, drag a tile to reorder.
+/// Hold the modifiers and it stays. Click a tile to jump there; drag a tile onto another to stack
+/// the two columns, or between two tiles to move the column there.
 final class StripIndicator {
     var onSelect: ((String, Int) -> Void)?
-    var onReorder: ((String, Int, Int) -> Void)?
+    var onDrop: ((String, Int, StripBarView.BarDrop) -> Void)?
 
     private var panel: NSPanel?
     private let bar = StripBarView()
@@ -21,9 +22,9 @@ final class StripIndicator {
             guard let self else { return }
             self.onSelect?(self.key, column)
         }
-        bar.onReorder = { [weak self] from, to in
+        bar.onDrop = { [weak self] from, drop in
             guard let self else { return }
-            self.onReorder?(self.key, from, to)
+            self.onDrop?(self.key, from, drop)
         }
     }
 
@@ -75,7 +76,7 @@ final class StripIndicator {
             // Still holding ⌃⌥, or hovering the bar: keep it up.
             let held = NSEvent.modifierFlags.intersection([.control, .option, .command, .shift]).isSuperset(of: self.holdFlags)
             let hovering = self.panel.map { $0.frame.contains(NSEvent.mouseLocation) } ?? false
-            if held || hovering { self.hideAt = CACurrentMediaTime() + 0.25 } else { self.hide(animated: true) }
+            if held || hovering || self.bar.isDragging { self.hideAt = CACurrentMediaTime() + 0.25 } else { self.hide(animated: true) }
         }
     }
 
@@ -135,9 +136,18 @@ final class StripBarView: NSView {
         let tabbed: Bool
     }
 
+    /// Where a dragged tile lands, in strip column indices.
+    enum BarDrop: Equatable {
+        /// Onto a column: the dragged column joins its stack.
+        case stack(into: Int)
+        /// Left of a column (nil = at the end): the dragged column moves there.
+        case before(Int?)
+    }
+
     var tiles: [Tile] = [] { didSet { invalidateIntrinsicContentSize() } }
     var onSelect: ((Int) -> Void)?
-    var onReorder: ((Int, Int) -> Void)?
+    var onDrop: ((Int, BarDrop) -> Void)?
+    var isDragging: Bool { dragFrom != nil && dragPoint != nil }
 
     private let padding: CGFloat = 10
     private let spacing: CGFloat = 6
@@ -195,6 +205,75 @@ final class StripBarView: NSView {
             let ghost = NSBezierPath(roundedRect: r.offsetBy(dx: p.x - r.midX, dy: 0), xRadius: 9, yRadius: 9)
             ghost.lineWidth = 1.5
             ghost.stroke()
+            drawLanding(drop(at: p, from: from), accent: accent)
+        }
+    }
+
+    /// The landing spot of the tile being dragged: a ring around the tile it will stack onto,
+    /// or a bar in the gap where it will be inserted.
+    private func drawLanding(_ landing: BarDrop?, accent: NSColor) {
+        let rs = rects()
+        switch landing {
+        case .stack(let column)?:
+            guard let k = tiles.firstIndex(where: { $0.column == column }) else { return }
+            let ring = NSBezierPath(roundedRect: rs[k].insetBy(dx: -2, dy: -2), xRadius: 11, yRadius: 11)
+            accent.setStroke()
+            ring.lineWidth = 3
+            ring.stroke()
+        case .before(let column)?:
+            let x: CGFloat
+            if let column, let k = tiles.firstIndex(where: { $0.column == column }) {
+                x = rs[k].minX - spacing / 2
+            } else if let last = rs.last {
+                x = last.maxX + spacing / 2
+            } else {
+                return
+            }
+            accent.setFill()
+            NSBezierPath(roundedRect: CGRect(x: x - 1.5, y: padding - 3, width: 3, height: height + 6), xRadius: 1.5, yRadius: 1.5).fill()
+        case nil:
+            break
+        }
+    }
+
+    /// Shows the bar as if tile `from` were being dragged to `p` (for `--snapshot`).
+    func simulateDrag(from: Int, to p: CGPoint) {
+        dragFrom = from
+        dragPoint = p
+        needsDisplay = true
+    }
+
+    /// The centre of tile `k`, in the bar's coordinates.
+    func tileCenter(_ k: Int) -> CGPoint {
+        let r = rects()[k]
+        return CGPoint(x: r.midX, y: r.midY)
+    }
+
+    /// What dropping the tile at index `from` at point `p` would do; nil when it would not move.
+    func drop(at p: CGPoint, from: Int) -> BarDrop? {
+        let rs = rects()
+        var landing = BarDrop.before(nil)
+        for (k, r) in rs.enumerated() {
+            if p.x < r.minX {
+                landing = .before(tiles[k].column)
+                break
+            }
+            guard p.x <= r.maxX else { continue }
+            let edge = max(r.width * 0.25, 8)
+            if p.x < r.minX + edge {
+                landing = .before(tiles[k].column)
+            } else if p.x > r.maxX - edge {
+                landing = .before(tiles[safe: k + 1]?.column)
+            } else {
+                landing = .stack(into: tiles[k].column)
+            }
+            break
+        }
+        let source = tiles[from].column
+        switch landing {
+        case .stack(let into) where into == source: return nil
+        case .before(let column) where column == source || column == tiles[safe: from + 1]?.column: return nil
+        default: return landing
         }
     }
 
@@ -237,11 +316,11 @@ final class StripBarView: NSView {
             needsDisplay = true
         }
         let p = convert(event.locationInWindow, from: nil)
-        guard let from = dragFrom, let to = index(at: p) else { return }
-        if dragPoint == nil || from == to {
-            onSelect?(tiles[from].column)
-        } else {
-            onReorder?(tiles[from].column, tiles[to].column)
+        guard let from = dragFrom else { return }
+        if dragPoint == nil {
+            if index(at: p) == from { onSelect?(tiles[from].column) }
+        } else if let landing = drop(at: p, from: from) {
+            onDrop?(tiles[from].column, landing)
         }
     }
 }

@@ -31,6 +31,18 @@ enum Snapshot {
         bar.frame = effect.bounds
         effect.addSubview(bar)
         write(effect, to: "\(dir)/indicator.png")
+
+        // Tile 4 dragged over the middle of tile 1 (stack), then into the gap after tile 1 (insert).
+        let stackPoint = bar.tileCenter(1)
+        bar.simulateDrag(from: 4, to: stackPoint)
+        write(effect, to: "\(dir)/indicator-stack.png")
+        print("tile 4 over the middle of tile 1:", bar.drop(at: stackPoint, from: 4).map { "\($0)" } ?? "nothing")
+        let gap = CGPoint(x: (bar.tileCenter(1).x + bar.tileCenter(2).x) / 2, y: stackPoint.y)
+        bar.simulateDrag(from: 4, to: gap)
+        write(effect, to: "\(dir)/indicator-insert.png")
+        print("tile 4 between tiles 1 and 2:", bar.drop(at: gap, from: 4).map { "\($0)" } ?? "nothing")
+        print("tile 4 over itself:", bar.drop(at: bar.tileCenter(4), from: 4).map { "\($0)" } ?? "nothing")
+        print("tile 0 just right of itself:", bar.drop(at: CGPoint(x: (bar.tileCenter(0).x + bar.tileCenter(1).x) / 2, y: stackPoint.y), from: 0).map { "\($0)" } ?? "nothing")
     }
 
     private static func write(_ view: NSView, to path: String) {

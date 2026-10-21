@@ -248,3 +248,94 @@ final class SwipeTrackerTests: XCTestCase {
         XCTAssertEqual(t.update(three(0.3), time: 0.06), [], "blocked until every finger lifts")
     }
 }
+
+final class DropTests: XCTestCase {
+    /// Three columns of 300 pt with 10 pt gaps; column 1 holds a stack of two windows.
+    func setup() -> (Strip, [WindowID: CGRect]) {
+        var s = Strip()
+        for id: WindowID in [1, 2, 4] { s.insert(id, width: 0.3, after: s.columns.isEmpty ? nil : s.columns.count - 1) }
+        s.columns[1].windows.append(3)
+        s.columns[1].weights.append(1)
+        let frames: [WindowID: CGRect] = [
+            1: CGRect(x: 0, y: 0, width: 300, height: 800),
+            2: CGRect(x: 310, y: 0, width: 300, height: 395),
+            3: CGRect(x: 310, y: 405, width: 300, height: 395),
+            4: CGRect(x: 620, y: 0, width: 300, height: 800),
+        ]
+        return (s, frames)
+    }
+
+    func testMiddleOfAColumnStacks() {
+        let (s, f) = setup()
+        // Over the top half of window 2: above it.
+        XCTAssertEqual(Layout.dropTarget(at: CGPoint(x: 460, y: 100), moving: 1, in: s, frames: f),
+                       .stack(column: s.columns[1].id, before: 2))
+        // Over the lower part of window 3: at the bottom of the stack.
+        XCTAssertEqual(Layout.dropTarget(at: CGPoint(x: 460, y: 700), moving: 1, in: s, frames: f),
+                       .stack(column: s.columns[1].id, before: nil))
+        // Over the lower half of a single window: below it.
+        XCTAssertEqual(Layout.dropTarget(at: CGPoint(x: 770, y: 600), moving: 1, in: s, frames: f),
+                       .stack(column: s.columns[2].id, before: nil))
+    }
+
+    func testEdgesAndGapsMakeAColumn() {
+        let (s, f) = setup()
+        XCTAssertEqual(Layout.dropTarget(at: CGPoint(x: 320, y: 300), moving: 4, in: s, frames: f), .column(before: s.columns[1].id))
+        XCTAssertEqual(Layout.dropTarget(at: CGPoint(x: 600, y: 300), moving: 1, in: s, frames: f), .column(before: s.columns[2].id))
+        XCTAssertEqual(Layout.dropTarget(at: CGPoint(x: 305, y: 300), moving: 4, in: s, frames: f), .column(before: s.columns[1].id))
+        XCTAssertEqual(Layout.dropTarget(at: CGPoint(x: 990, y: 300), moving: 1, in: s, frames: f), .column(before: nil))
+    }
+
+    func testStackingAWindowIntoAnotherColumn() {
+        let (initial, f) = setup()
+        var s = initial
+        let target = s.columns[2].id
+        XCTAssertTrue(s.move(1, to: Layout.dropTarget(at: CGPoint(x: 770, y: 100), moving: 1, in: s, frames: f)))
+        XCTAssertEqual(s.columns.map(\.windows), [[2, 3], [1, 4]])
+        XCTAssertEqual(s.columns[1].id, target)
+        XCTAssertEqual(s.focusedWindow, 1, "the dropped window gets focus")
+    }
+
+    func testDraggingOutOfAStackMakesAColumn() {
+        var (s, _) = setup()
+        XCTAssertTrue(s.move(3, to: .column(before: s.columns[2].id)))
+        XCTAssertEqual(s.columns.map(\.windows), [[1], [2], [3], [4]])
+        XCTAssertEqual(s.columns[2].width, 0.3, accuracy: 0.001, "keeps the width of the stack it left")
+    }
+
+    func testReorderingInsideAStack() {
+        var (s, _) = setup()
+        XCTAssertTrue(s.move(3, to: .stack(column: s.columns[1].id, before: 2)))
+        XCTAssertEqual(s.columns[1].windows, [3, 2])
+    }
+
+    func testDroppingBackInPlaceChangesNothing() {
+        let (initial, f) = setup()
+        var s = initial
+        let before = s
+        // Window 1 dropped in the gap right of its own (now empty) slot: same place.
+        XCTAssertFalse(s.move(1, to: Layout.dropTarget(at: CGPoint(x: 150, y: 300), moving: 1, in: s, frames: f)))
+        XCTAssertFalse(s.move(1, to: .column(before: s.columns[1].id)))
+        XCTAssertFalse(s.move(4, to: .column(before: nil)))
+        XCTAssertEqual(s, before)
+    }
+
+    func testIndicatorColumnMoves() {
+        var (s, _) = setup()
+        // Merge the stack [2, 3] into the column of window 4.
+        XCTAssertTrue(s.move(column: s.columns[1].id, to: .stack(column: s.columns[2].id, before: nil)))
+        XCTAssertEqual(s.columns.map(\.windows), [[1], [4, 2, 3]])
+        // Move column [1] to the end.
+        XCTAssertTrue(s.move(column: s.columns[0].id, to: .column(before: nil)))
+        XCTAssertEqual(s.columns.map(\.windows), [[4, 2, 3], [1]])
+        XCTAssertFalse(s.move(column: s.columns[1].id, to: .column(before: nil)), "already last")
+    }
+
+    func testDropsRespectPinnedColumns() {
+        var (s, _) = setup()
+        s.focused = 0
+        _ = s.togglePin(.left)
+        XCTAssertTrue(s.move(4, to: .column(before: s.columns[0].id)))
+        XCTAssertEqual(s.columns.map(\.windows), [[1], [4], [2, 3]], "nothing goes left of a left-pinned column")
+    }
+}

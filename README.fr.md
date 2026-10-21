@@ -30,11 +30,15 @@ autres : la bande s'allonge, et tu la fais défiler au clavier ou en glissant tr
   jusqu'à la colonne la plus proche en gardant leur élan. Un geste rapide file à la colonne suivante.
 - **Largeurs.** Largeurs prédéfinies (33 / 50 / 66 % par défaut, réglables), pleine largeur,
   centrage, plus large ou plus étroite.
+- **Glisser-déposer.** Attrape une fenêtre par sa barre de titre et lâche-la sur une autre pour
+  l'empiler avec (au-dessus ou en dessous selon la moitié où tu la lâches), ou près du bord d'une
+  fenêtre, ou entre deux, pour lui donner sa propre colonne. Un aperçu translucide montre où elle va
+  atterrir avant que tu lâches. Ça marche aussi d'un écran à l'autre.
 - **Piles et onglets.** Plusieurs fenêtres dans une colonne, hauteurs réglables, ou colonne en onglets.
 - **Colonnes épinglées** au bord gauche ou droit pendant que le reste défile.
-- **Indicateur de bande** givré, cliquable, réordonnable au glisser.
-- **Souris.** Glisse une fenêtre par sa barre de titre pour réordonner, redimensionne-la pour changer
-  la largeur de sa colonne.
+- **Indicateur de bande** givré : clique une tuile pour y aller, lâche-la sur une autre pour réunir
+  les deux colonnes en une pile, ou entre deux tuiles pour déplacer la colonne.
+- **Redimensionner à la souris** : la colonne prend la nouvelle largeur.
 - **Une bande par écran et par Space**, et un raccourci pour envoyer une fenêtre à l'écran suivant.
 - **Fenêtres flottantes.** Dialogues, Coup d'œil et fenêtres de taille fixe flottent seuls ; tu
   peux choisir des apps qui flottent toujours.
