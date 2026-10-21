@@ -23,11 +23,11 @@ final class Settings: ObservableObject {
     @Published var focusBorder: Bool { didSet { d.set(focusBorder, forKey: "focusBorder"); onLayoutChange?() } }
     @Published var borderWidth: Double { didSet { d.set(borderWidth, forKey: "borderWidth"); onLayoutChange?() } }
     @Published var floatApps: [String] { didSet { d.set(floatApps, forKey: "floatApps"); onRulesChange?() } }
-    @Published var modifiers: ModifierPreset { didSet { d.set(modifiers.rawValue, forKey: "modifiers"); onShortcutsChange?() } }
-    @Published var scrollWithModifiers: Bool { didSet { d.set(scrollWithModifiers, forKey: "scrollWithModifiers") } }
+    @Published var modifiers: ModifierPreset { didSet { d.set(modifiers.rawValue, forKey: "modifiers"); onShortcutsChange?(); ScrollTap.shared.refresh() } }
+    @Published var scrollWithModifiers: Bool { didSet { d.set(scrollWithModifiers, forKey: "scrollWithModifiers"); ScrollTap.shared.refresh() } }
     /// Fingers for the trackpad swipe: 3, 4, or 0 for off.
     @Published var swipeFingers: Int { didSet { d.set(swipeFingers, forKey: "swipeFingers"); TrackpadSwipe.shared.start(fingers: swipeFingers) } }
-    @Published var invertScroll: Bool { didSet { d.set(invertScroll, forKey: "invertScroll") } }
+    @Published var invertScroll: Bool { didSet { d.set(invertScroll, forKey: "invertScroll"); ScrollTap.shared.refresh() } }
     @Published var restoreSession: Bool { didSet { d.set(restoreSession, forKey: "restoreSession") } }
     @Published var onboarded: Bool { didSet { d.set(onboarded, forKey: "onboarded") } }
 
