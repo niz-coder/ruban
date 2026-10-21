@@ -130,6 +130,11 @@ Every action above has a name: `focus-left`, `move-right`, `cycle-width`, `full-
   macOS pulls back a window placed entirely off screen to 40 points, but leaves a 1-point one alone.
 - Scrolling is locked to the display's refresh rate, and a critically damped spring takes over from
   your fingers when you let go.
+- The work that waits on other processes over and over stays off the main thread: window scans,
+  window moves, title reads and notification sign-ups go to background queues. The scroll tap has
+  a thread of its own and is only installed while it has something to do, so a busy app or window
+  server can slow the strip down, not scrolling in other apps. Ruban also stops looking while the
+  screen is locked, the screen saver runs or the displays sleep.
 
 ### Private APIs
 

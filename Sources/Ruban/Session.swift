@@ -19,22 +19,16 @@ final class SessionStore {
         return dir.appendingPathComponent("session.json")
     }()
 
-    private var pending: DispatchWorkItem?
     private var saved: [String: [SavedColumn]]
 
     init() {
         saved = (try? JSONDecoder().decode([String: [SavedColumn]].self, from: Data(contentsOf: url))) ?? [:]
     }
 
-    func scheduleSave(_ snapshot: @escaping () -> [String: [SavedColumn]]) {
-        pending?.cancel()
-        let work = DispatchWorkItem { [weak self] in
-            guard let self else { return }
-            for (k, v) in snapshot() { self.saved[k] = v }
-            if let data = try? JSONEncoder().encode(self.saved) { try? data.write(to: self.url, options: .atomic) }
-        }
-        pending = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1, execute: work)
+    /// Records these strips, keeping the ones saved for other displays and Spaces, and writes them out.
+    func save(_ strips: [String: [SavedColumn]]) {
+        for (k, v) in strips { saved[k] = v }
+        if let data = try? JSONEncoder().encode(saved) { try? data.write(to: url, options: .atomic) }
     }
 
     /// The saved strip for a key, falling back to any strip saved for the same display

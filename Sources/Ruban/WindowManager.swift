@@ -65,10 +65,28 @@ final class WindowManager {
     /// again every few seconds: a window leaving full screen, or one its app finishes setting up,
     /// becomes tileable.
     private var rejected: [WindowID: CFTimeInterval] = [:]
-    private let rejudgeAfter = 3.0
     /// Set when a setting changes which windows tile: the next pass asks every app again.
     var needsFullScan = true
     private var pendingVanish: [WindowID: Int] = [:]
+
+    /// Why the strips are left alone for now: the screen is locked, the screen saver runs, the Mac
+    /// or its displays sleep, another user has the screen. Nothing can be arranged meanwhile, and
+    /// asking the window server and every app what changed only weighs on a Mac that may already
+    /// be struggling: the lock screen once stalled the window server for half a minute.
+    private var pauseReasons = Set<String>()
+    var paused: Bool { !pauseReasons.isEmpty }
+    private var distributedTokens: [NSObjectProtocol] = []
+    private var checkingSession = false
+
+    /// Scans run on their own queue, one at a time: asking again while one is under way runs one
+    /// more after it, never a pile of them.
+    private let scanQueue = DispatchQueue(label: "ruban.scan", qos: .userInitiated)
+    private var scanning = false
+    private var scanAgain = false
+    /// Bumped by start and stop, so a scan begun before them is thrown away.
+    private var generation = 0
+    /// Current Space of each display, by UUID, as the last scan found them.
+    private var spaces: [String: UInt64] = [:]
 
     private init() {
         animator.apply = { [weak self] id, frame in self?.place(id, virtual: frame) }
@@ -84,12 +102,15 @@ final class WindowManager {
         running = true
         bootstrapped = false
         needsFullScan = true
+        generation += 1
         rejected.removeAll()
-        Log.write("start")
+        pauseReasons = LoginSession.isLocked ? ["screen locked"] : []
+        Log.write(paused ? "start, paused while the screen is locked" : "start")
         installWorkspaceObservers()
         reconcile()
-        heartbeat = Timer.scheduledTimer(withTimeInterval: 2.5, repeats: true) { [weak self] _ in self?.reconcile() }
+        heartbeat = Timer.scheduledTimer(withTimeInterval: 2.5, repeats: true) { [weak self] _ in self?.heartbeatTick() }
         watchSwipeConflict()
+        ScrollTap.shared.refresh()
     }
 
     /// Stops tiling. Parked windows come back on screen so nothing is left hidden at the edge.
@@ -102,12 +123,19 @@ final class WindowManager {
         clock.stop()
         bringEverythingBack()
         running = false
+        generation += 1
+        scanAgain = false
+        pauseReasons.removeAll()
+        saveWork?.cancel()
+        ScrollTap.shared.refresh()
         heartbeat?.invalidate()
         heartbeat = nil
         conflictTimer?.invalidate()
         conflictTimer = nil
         for t in workspaceTokens { NSWorkspace.shared.notificationCenter.removeObserver(t) }
         workspaceTokens.removeAll()
+        for t in distributedTokens { DistributedNotificationCenter.default().removeObserver(t) }
+        distributedTokens.removeAll()
         NotificationCenter.default.removeObserver(self)
         for o in observers.values { o.invalidate() }
         observers.removeAll()
@@ -171,28 +199,88 @@ final class WindowManager {
                 self?.reconcile()
             }
         })
-        workspaceTokens.append(nc.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
+        workspaceTokens.append(nc.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { _ in
             TrackpadSwipe.shared.restart()
-            self?.needsFullScan = true
-            self?.scheduleReconcile(after: 1.5)
-        })
-        workspaceTokens.append(nc.addObserver(forName: NSWorkspace.screensDidWakeNotification, object: nil, queue: .main) { [weak self] _ in
-            self?.scheduleReconcile(after: 1.0)
         })
         NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
             self?.scheduleReconcile(after: 0.5)
+        }
+
+        // Nobody can see or use the strips meanwhile: leave them alone until the user is back.
+        let pauses: [(Notification.Name, Notification.Name, String)] = [
+            (NSWorkspace.willSleepNotification, NSWorkspace.didWakeNotification, "sleep"),
+            (NSWorkspace.screensDidSleepNotification, NSWorkspace.screensDidWakeNotification, "displays asleep"),
+            (NSWorkspace.sessionDidResignActiveNotification, NSWorkspace.sessionDidBecomeActiveNotification, "another user"),
+        ]
+        for (begins, ends, reason) in pauses {
+            workspaceTokens.append(nc.addObserver(forName: begins, object: nil, queue: .main) { [weak self] _ in self?.pause(reason) })
+            workspaceTokens.append(nc.addObserver(forName: ends, object: nil, queue: .main) { [weak self] _ in self?.resume(reason) })
+        }
+        let dnc = DistributedNotificationCenter.default()
+        for (begins, ends, reason) in [("com.apple.screenIsLocked", "com.apple.screenIsUnlocked", "screen locked"),
+                                       ("com.apple.screensaver.didstart", "com.apple.screensaver.didstop", "screen saver")] {
+            distributedTokens.append(dnc.addObserver(forName: .init(begins), object: nil, queue: .main) { [weak self] _ in self?.pause(reason) })
+            distributedTokens.append(dnc.addObserver(forName: .init(ends), object: nil, queue: .main) { [weak self] _ in self?.resume(reason) })
+        }
+    }
+
+    // MARK: Pausing
+
+    private func pause(_ reason: String) {
+        guard running, pauseReasons.insert(reason).inserted else { return }
+        Log.write("pause: \(reason)")
+        reconcileWork?.cancel()
+        ScrollTap.shared.refresh()
+    }
+
+    private func resume(_ reason: String) {
+        guard pauseReasons.remove(reason) != nil else { return }
+        guard !paused else {
+            Log.write("pause: \(reason) is over, still \(pauseReasons.sorted().joined(separator: ", "))")
+            return
+        }
+        Log.write("resume after \(reason)")
+        resumed()
+    }
+
+    private func resumed() {
+        // Windows may have come, gone or changed Space meanwhile.
+        needsFullScan = true
+        scheduleReconcile(after: 1.0)
+        ScrollTap.shared.refresh()
+    }
+
+    private func heartbeatTick() {
+        guard paused else { return reconcile() }
+        // A notification that never came must not leave Ruban paused for good: someone using the
+        // Mac on an unlocked screen means every reason to pause is over. Asking is a question to
+        // the window server, so it waits on the scan queue too.
+        guard !checkingSession else { return }
+        checkingSession = true
+        scanQueue.async { [weak self] in
+            let inUse = LoginSession.inUse(within: 3)
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.checkingSession = false
+                guard inUse, self.running, self.paused else { return }
+                Log.write("resume: the Mac is in use (\(self.pauseReasons.sorted().joined(separator: ", ")) never ended)")
+                self.pauseReasons.removeAll()
+                self.resumed()
+            }
         }
     }
 
     // MARK: Displays
 
-    private func refreshDisplays() {
+    /// Rebuilds the display list. Each display's current Space comes from the scans, which ask the
+    /// window server off the main thread; `found` is what the latest one saw.
+    private func refreshDisplays(spaces found: [String: UInt64]? = nil) {
+        if let found { spaces = found }
         displays = NSScreen.screens.map { screen in
             let uuid = screen.uuidString
-            let space = SkyLight.currentSpace(displayUUID: uuid)
             let params = LayoutParams(area: NSScreen.toAX(screen.visibleFrame), screen: NSScreen.toAX(screen.frame),
                                       gap: settings.gap, centre: settings.centreMode)
-            return Display(screen: screen, key: "\(uuid)#\(space)", params: params)
+            return Display(screen: screen, key: "\(uuid)#\(spaces[uuid] ?? 0)", params: params)
         }
     }
 
@@ -227,93 +315,77 @@ final class WindowManager {
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }
 
-    private func isTileable(_ el: AXUIElement, app: NSRunningApplication, id: WindowID) -> Bool {
-        if userFloating.contains(id) { return false }
-        if let b = app.bundleIdentifier, settings.floatApps.contains(b) { return false }
-        guard el.role == kAXWindowRole as String, el.subrole == kAXStandardWindowSubrole as String else { return false }
-        guard !el.isMinimized, !el.isFullScreen else { return false }
-        guard el.isSettable(kAXPositionAttribute), el.isSettable(kAXSizeAttribute) else { return false }
-        guard let size = el.size, size.width >= 120, size.height >= 80 else { return false }
-        // Fixed-size windows (Calculator, About boxes) float: their green button is disabled.
-        if let zoom = el.element(kAXZoomButtonAttribute), zoom.bool(kAXEnabledAttribute) == false { return false }
-        return true
+    /// Looks again at which windows exist and which tile. The asking happens on the scan queue;
+    /// the strips change back on the main thread once the answers are in.
+    func reconcile() {
+        guard running, !paused, AX.isTrusted() else { return }
+        guard !scanning else {
+            scanAgain = true
+            return
+        }
+        scanning = true
+        let me = ProcessInfo.processInfo.processIdentifier
+        let input = WindowScan.Input(
+            generation: generation,
+            full: needsFullScan,
+            displayUUIDs: NSScreen.screens.map(\.uuidString),
+            apps: NSWorkspace.shared.runningApplications
+                .filter { $0.activationPolicy == .regular && $0.processIdentifier != me }
+                .map { WindowScan.App(pid: $0.processIdentifier, bundleID: $0.bundleIdentifier ?? "", isHidden: $0.isHidden) },
+            tracked: windows.mapValues { (element: $0.element, pid: $0.pid) },
+            rejected: rejected,
+            userFloating: userFloating,
+            floatApps: Set(settings.floatApps))
+        needsFullScan = false
+        scanQueue.async { [weak self] in
+            let scan = WindowScan.run(input)
+            DispatchQueue.main.async { self?.finish(scan) }
+        }
     }
 
-    func reconcile() {
-        guard running else { return }
-        guard AX.isTrusted() else { return }
+    private func finish(_ scan: WindowScan) {
+        scanning = false
+        if scan.input.generation == generation, running, !paused {
+            apply(scan)
+        } else if scan.input.full {
+            needsFullScan = true
+        }
+        if scanAgain {
+            scanAgain = false
+            reconcile()
+        }
+    }
+
+    private func apply(_ scan: WindowScan) {
         let started = CACurrentMediaTime()
         defer {
             let ms = Int((CACurrentMediaTime() - started) * 1000)
-            if ms > 150 { Log.write("reconcile took \(ms) ms") }
+            if ms > 50 { Log.write("reconcile took \(ms) ms on the main thread") }
         }
-        refreshDisplays()
+        refreshDisplays(spaces: scan.spaces)
         let currentKeys = Set(displays.map(\.key))
-        let owners = WindowList.onScreenOwners()
-        let onScreen = Set(owners.keys)
-        var onScreenByPID: [pid_t: Set<WindowID>] = [:]
-        for (id, pid) in owners { onScreenByPID[pid, default: []].insert(id) }
-        let existing = WindowList.all()
-        rejected = rejected.filter { existing.contains($0.key) }
-        let full = needsFullScan
-        needsFullScan = false
-        let me = ProcessInfo.processInfo.processIdentifier
-
-        var tileable: [WindowID: (AXUIElement, NSRunningApplication)] = [:]
-        var hiddenPIDs = Set<pid_t>()
-        var livePIDs = Set<pid_t>()
-        for app in NSWorkspace.shared.runningApplications where app.activationPolicy == .regular && app.processIdentifier != me {
-            let pid = app.processIdentifier
-            livePIDs.insert(pid)
-            let appStart = CACurrentMediaTime()
-            defer {
-                let ms = Int((CACurrentMediaTime() - appStart) * 1000)
-                if ms > 250 { Log.write("  slow app \(app.bundleIdentifier ?? "?"): \(ms) ms") }
-            }
-            if observers[pid] == nil { observers[pid] = AppObserver(pid: pid) }
-            if app.isHidden {
-                hiddenPIDs.insert(pid)
-                continue
-            }
-            guard let ids = onScreenByPID[pid], !ids.isEmpty else { continue }
-            // Asking an app for its windows is a slow cross-process call. The window server's list is
-            // nearly free, so only ask apps that show a window we have not judged yet.
-            let now = CACurrentMediaTime()
-            let unknown = ids.contains { windows[$0] == nil && now - (rejected[$0] ?? 0) > rejudgeAfter }
-            if !full && !unknown {
-                for id in ids { if let w = windows[id] { tileable[id] = (w.element, app) } }
-                continue
-            }
-            var seen = Set<WindowID>()
-            for w in AXUIElementCreateApplication(pid).windows {
-                guard let id = w.windowID, onScreen.contains(id) else { continue }
-                seen.insert(id)
-                if isTileable(w, app: app, id: id) {
-                    tileable[id] = (w, app)
-                    rejected[id] = nil
-                } else {
-                    rejected[id] = now
-                }
-            }
-            // On-screen windows the app does not list (overlays, helper panels) are never tiles.
-            for id in ids.subtracting(seen) where windows[id] == nil { rejected[id] = now }
-        }
-        for pid in observers.keys where !livePIDs.contains(pid) {
+        rejected = rejected.filter { scan.existing.contains($0.key) }
+        for id in scan.accepted { rejected[id] = nil }
+        for id in scan.refused { rejected[id] = scan.now }
+        for app in scan.input.apps where observers[app.pid] == nil { observers[app.pid] = AppObserver(pid: app.pid) }
+        for pid in observers.keys where !scan.livePIDs.contains(pid) {
             observers[pid]?.invalidate()
             observers[pid] = nil
         }
+        // A window floated while the scan was under way stays afloat.
+        let tileable = scan.tileable.filter { !userFloating.contains($0.key) }
 
         var changed = false
 
         // Windows we track that are no longer tileable here.
         var vanished: [WindowID] = []
         for (id, w) in windows where tileable[id] == nil {
-            if !existing.contains(id) || !livePIDs.contains(w.pid) {
+            if !scan.existing.contains(id) || !scan.livePIDs.contains(w.pid) {
                 drop(id)
                 changed = true
                 continue
             }
-            if hiddenPIDs.contains(w.pid) || w.element.isMinimized { continue } // keep its slot for when it returns
+            if scan.hiddenPIDs.contains(w.pid) || scan.minimized.contains(id) { continue } // keep its slot for when it returns
             guard let key = stripKeyOf[id], currentKeys.contains(key) else { continue } // lives on another Space
             vanished.append(id)
         }
@@ -326,8 +398,8 @@ final class WindowManager {
         // Tracked windows that now show up on another strip's Space (moved by Mission Control).
         // Space switches are not atomic, so a move only counts once two passes agree.
         var suspects: [WindowID: Int] = [:]
-        for (id, entry) in tileable {
-            guard let key = stripKeyOf[id], !currentKeys.contains(key), let frame = entry.0.frame,
+        for id in tileable.keys {
+            guard let key = stripKeyOf[id], !currentKeys.contains(key), let frame = scan.bounds[id],
                   let d = display(containing: CGPoint(x: frame.midX, y: frame.midY)) else { continue }
             suspects[id] = (suspectMoves[id] ?? 0) + 1
             guard suspects[id]! >= 2 else { continue }
@@ -339,17 +411,16 @@ final class WindowManager {
 
         // New windows.
         let fresh = tileable.keys.filter { windows[$0] == nil }
-            .compactMap { id -> (WindowID, CGRect)? in tileable[id]!.0.frame.map { (id, $0) } }
+            .compactMap { id -> (WindowID, CGRect)? in scan.fresh[id].map { (id, $0.frame) } }
             .sorted { $0.1.minX < $1.1.minX }
         if !fresh.isEmpty { changed = true }
 
         if !bootstrapped {
-            bootstrap(fresh, tileable: tileable)
+            bootstrap(fresh, tileable: tileable, titles: scan.fresh.mapValues(\.title))
         } else {
             for (id, frame) in fresh {
                 let (el, app) = tileable[id]!
-                let w = TrackedWindow(id: id, pid: app.processIdentifier, element: el,
-                                      bundleID: app.bundleIdentifier ?? "", title: el.title)
+                let w = TrackedWindow(id: id, pid: app.pid, element: el, bundleID: app.bundleID, title: scan.fresh[id]?.title ?? "")
                 // Native tabs and re-created windows: take over the slot of a window that just
                 // disappeared from the same app at the same place.
                 if let i = vanished.firstIndex(where: { windows[$0]?.pid == w.pid && (applied[$0] ?? .null).isClose(to: frame, tolerance: 4) }) {
@@ -397,11 +468,11 @@ final class WindowManager {
         bootstrapped = true
     }
 
-    private func bootstrap(_ fresh: [(WindowID, CGRect)], tileable: [WindowID: (AXUIElement, NSRunningApplication)]) {
+    private func bootstrap(_ fresh: [(WindowID, CGRect)], tileable: [WindowID: (element: AXUIElement, app: WindowScan.App)], titles: [WindowID: String]) {
         var byKey: [String: [(id: WindowID, bundleID: String, title: String)]] = [:]
         for (id, frame) in fresh {
             let (el, app) = tileable[id]!
-            let w = TrackedWindow(id: id, pid: app.processIdentifier, element: el, bundleID: app.bundleIdentifier ?? "", title: el.title)
+            let w = TrackedWindow(id: id, pid: app.pid, element: el, bundleID: app.bundleID, title: titles[id] ?? "")
             track(w)
             applied[id] = frame
             guard let d = display(containing: CGPoint(x: frame.midX, y: frame.midY)) else { continue }
@@ -429,7 +500,7 @@ final class WindowManager {
     private func track(_ w: TrackedWindow) {
         windows[w.id] = w
         if observers[w.pid] == nil { observers[w.pid] = AppObserver(pid: w.pid) }
-        observers[w.pid]?.watch(w.element)
+        observers[w.pid]?.watch(w.element, id: w.id)
     }
 
     /// Adds a window as a new column right of the focused one.
@@ -786,7 +857,7 @@ final class WindowManager {
     /// Scrolls the strip under the mouse. Windows move on the next screen refresh, once per frame,
     /// however many trackpad events came in meanwhile.
     func scroll(by delta: Double) {
-        guard running, let d = display(containing: mouseLocationAX), var strip = strips[d.key] else { return }
+        guard running, !paused, let d = display(containing: mouseLocationAX), var strip = strips[d.key] else { return }
         springs[d.key] = nil
         focusWhenSettled[d.key] = nil
         let g = Layout.geometry(strip, present: present, d.params)
@@ -806,14 +877,14 @@ final class WindowManager {
     /// A trackpad swipe moved by `fraction` of the trackpad's width (negative = fingers went left).
     /// The strip follows the fingers: fingers to the left bring in the windows on the right.
     func swipe(by fraction: Double) {
-        guard running, !swipeBlocked(), let d = display(containing: mouseLocationAX) else { return }
+        guard running, !paused, !swipeBlocked(), let d = display(containing: mouseLocationAX) else { return }
         let sign: Double = settings.invertScroll ? 1 : -1
         scroll(by: sign * fraction * d.params.inner.width * swipeGain)
     }
 
     /// Fingers lifted: a flick carries on to the next column or two, a slow release settles nearby.
     func endSwipe(velocity: Double) {
-        guard running, !swipeBlocked(), let d = display(containing: mouseLocationAX) else { return }
+        guard running, !paused, !swipeBlocked(), let d = display(containing: mouseLocationAX) else { return }
         let sign: Double = settings.invertScroll ? 1 : -1
         endScroll(fling: sign * velocity * d.params.inner.width * swipeGain)
         Log.write("swipe ended (speed \(String(format: "%.1f", velocity))), focused column \(strips[d.key]?.focused ?? -1)")
@@ -822,7 +893,7 @@ final class WindowManager {
     /// After a swipe, settles on the nearest column and focuses it. `fling` is the strip's speed
     /// when the fingers let go, in points per second; the strip coasts that way before settling.
     func endScroll(fling: Double = 0) {
-        guard running, let d = display(containing: mouseLocationAX), var strip = strips[d.key] else { return }
+        guard running, !paused, let d = display(containing: mouseLocationAX), var strip = strips[d.key] else { return }
         let g = Layout.geometry(strip, present: present, d.params)
         let coast = max(-g.scrollWidth, min(g.scrollWidth, fling * 0.2))
         guard let snap = Layout.snap(g, scroll: strip.scroll + coast, focused: strip.focused, mode: settings.centreMode) else { return }
@@ -1080,20 +1151,36 @@ final class WindowManager {
                        holdWhile: settings.modifiers.flags)
     }
 
+    private var saveWork: DispatchWorkItem?
+
+    /// Saves the strips a second after the last change. The titles are read on the scan queue
+    /// first: each one is a question to the window's app, and a busy app would hold everything up.
     private func saveSession() {
-        session.scheduleSave { [weak self] in
-            guard let self else { return [:] }
-            var out: [String: [SessionStore.SavedColumn]] = [:]
-            for w in self.windows.values where self.present.contains(w.id) { w.title = w.element.title }
-            for (key, strip) in self.strips where !strip.columns.isEmpty {
-                out[key] = strip.columns.map { c in
-                    SessionStore.SavedColumn(
-                        items: c.windows.compactMap { id in self.windows[id].map { SessionStore.Item(bundleID: $0.bundleID, title: $0.title) } },
-                        width: c.width, tabbed: c.tabbed, pinned: c.pinned)
-                }
+        saveWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            let targets = self.windows.values.filter { self.present.contains($0.id) }.map { (id: $0.id, element: $0.element) }
+            self.scanQueue.async { [weak self] in
+                let titles = targets.map { (id: $0.id, title: $0.element.title) }
+                DispatchQueue.main.async { self?.save(titles: titles) }
             }
-            return out
         }
+        saveWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1, execute: work)
+    }
+
+    private func save(titles: [(id: WindowID, title: String)]) {
+        guard running else { return }
+        for t in titles { windows[t.id]?.title = t.title }
+        var out: [String: [SessionStore.SavedColumn]] = [:]
+        for (key, strip) in strips where !strip.columns.isEmpty {
+            out[key] = strip.columns.map { c in
+                SessionStore.SavedColumn(
+                    items: c.windows.compactMap { id in windows[id].map { SessionStore.Item(bundleID: $0.bundleID, title: $0.title) } },
+                    width: c.width, tabbed: c.tabbed, pinned: c.pinned)
+            }
+        }
+        session.save(out)
     }
 }
 
@@ -1102,6 +1189,9 @@ extension Notification.Name {
 }
 
 /// One AXObserver per app, delivering window events on the main run loop.
+///
+/// Signing up for an app's notifications is a question to that app, so it happens on the app's own
+/// queue: a busy app delays its own notifications, not the main thread.
 final class AppObserver {
     let pid: pid_t
     private var observer: AXObserver?
@@ -1115,20 +1205,24 @@ final class AppObserver {
         }
         guard AXObserverCreate(pid, callback, &obs) == .success, let obs else { return nil }
         observer = obs
-        let app = AXUIElementCreateApplication(pid)
-        for n in [kAXWindowCreatedNotification, kAXFocusedWindowChangedNotification, kAXMainWindowChangedNotification,
-                  kAXApplicationHiddenNotification, kAXApplicationShownNotification] {
-            AXObserverAddNotification(obs, app, n as CFString, nil)
-        }
         CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(obs), .commonModes)
+        let app = AXUIElementCreateApplication(pid)
+        AXWorker.shared.afterPending(pid) {
+            for n in [kAXWindowCreatedNotification, kAXFocusedWindowChangedNotification, kAXMainWindowChangedNotification,
+                      kAXApplicationHiddenNotification, kAXApplicationShownNotification] {
+                AXObserverAddNotification(obs, app, n as CFString, nil)
+            }
+        }
     }
 
-    func watch(_ window: AXUIElement) {
-        guard let observer, let id = window.windowID, !watched.contains(id) else { return }
+    func watch(_ window: AXUIElement, id: WindowID) {
+        guard let observer, !watched.contains(id) else { return }
         watched.insert(id)
-        for n in [kAXUIElementDestroyedNotification, kAXWindowMiniaturizedNotification, kAXWindowDeminiaturizedNotification,
-                  kAXWindowMovedNotification, kAXWindowResizedNotification] {
-            AXObserverAddNotification(observer, window, n as CFString, nil)
+        AXWorker.shared.afterPending(pid) {
+            for n in [kAXUIElementDestroyedNotification, kAXWindowMiniaturizedNotification, kAXWindowDeminiaturizedNotification,
+                      kAXWindowMovedNotification, kAXWindowResizedNotification] {
+                AXObserverAddNotification(observer, window, n as CFString, nil)
+            }
         }
     }
 

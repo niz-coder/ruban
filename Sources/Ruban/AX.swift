@@ -159,13 +159,32 @@ enum SkyLight {
     }
 }
 
+/// The login session, as the window server sees it.
+enum LoginSession {
+    private static var info: [String: Any] { (CGSessionCopyCurrentDictionary() as? [String: Any]) ?? [:] }
+
+    /// The lock screen is up.
+    static var isLocked: Bool { (info["CGSSessionScreenIsLocked"] as? Bool) ?? false }
+
+    /// Someone is at the Mac: this session has the screen, it is not locked, and the keyboard,
+    /// mouse or trackpad was used within the last `seconds`.
+    static func inUse(within seconds: Double) -> Bool {
+        let s = info
+        guard (s["kCGSSessionOnConsoleKey"] as? Bool) ?? true, !((s["CGSSessionScreenIsLocked"] as? Bool) ?? false) else { return false }
+        let anyInput = CGEventType(rawValue: ~0)!
+        return CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: anyInput) < seconds
+    }
+}
+
 enum WindowList {
-    /// On-screen windows of the current Space with the pid that owns each.
-    static func onScreenOwners() -> [WindowID: pid_t] {
+    /// On-screen windows of the current Space, with the pid that owns each and where it is.
+    static func onScreen() -> [WindowID: (pid: pid_t, bounds: CGRect)] {
         guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else { return [:] }
-        var out: [WindowID: pid_t] = [:]
+        var out: [WindowID: (pid: pid_t, bounds: CGRect)] = [:]
         for info in list where (info[kCGWindowLayer as String] as? Int) == 0 {
-            if let n = info[kCGWindowNumber as String] as? UInt32, let pid = info[kCGWindowOwnerPID as String] as? Int32 { out[n] = pid }
+            guard let n = info[kCGWindowNumber as String] as? UInt32, let pid = info[kCGWindowOwnerPID as String] as? Int32 else { continue }
+            let dict = info[kCGWindowBounds as String] as? NSDictionary
+            out[n] = (pid, dict.flatMap { CGRect(dictionaryRepresentation: $0 as CFDictionary) } ?? .null)
         }
         return out
     }

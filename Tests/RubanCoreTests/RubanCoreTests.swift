@@ -339,3 +339,41 @@ final class DropTests: XCTestCase {
         XCTAssertEqual(s.columns.map(\.windows), [[1], [4], [2, 3]], "nothing goes left of a left-pinned column")
     }
 }
+
+final class ScrollFilterTests: XCTestCase {
+    func event(held: Bool, phase: Int = 0, momentum: Int = 0, continuous: Bool = true, dx: Double = -10, time: Double) -> ScrollFilter.Event {
+        ScrollFilter.Event(held: held, phase: phase, momentum: momentum, continuous: continuous, dx: dx, dy: 0, time: time)
+    }
+
+    func testScrollingWithoutTheKeysStaysWithTheApp() {
+        var f = ScrollFilter()
+        XCTAssertNil(f.filter(event(held: false, phase: 1, time: 0)))
+        XCTAssertNil(f.filter(event(held: false, continuous: false, time: 0.1)), "a plain mouse wheel")
+    }
+
+    func testHeldKeysMoveTheStripThenMomentumFollows() {
+        var f = ScrollFilter()
+        let move = f.filter(event(held: true, phase: 2, dx: -10, time: 0))
+        XCTAssertEqual(move?.delta, 10, "fingers to the left bring in the windows on the right")
+        XCTAssertNotNil(f.filter(event(held: false, momentum: 2, dx: -4, time: 0.1)), "the glide after letting go of the keys")
+        XCTAssertNil(f.filter(event(held: false, phase: 1, time: 0.15)), "a new gesture without the keys is the app's")
+    }
+
+    func testTheGestureEndsOnItsOwnWithoutAnyoneSettlingIt() {
+        // The main thread used to end the gesture; while it was stuck, every mouse wheel on the Mac
+        // was swallowed. Now the gesture ends by itself once events stop coming.
+        var f = ScrollFilter()
+        XCTAssertNotNil(f.filter(event(held: true, continuous: false, time: 0)))
+        XCTAssertNotNil(f.filter(event(held: false, continuous: false, time: 0.2)), "still the same wheel turn")
+        XCTAssertNil(f.filter(event(held: false, continuous: false, time: 0.5)), "a later wheel turn is the app's")
+        XCTAssertNotNil(f.filter(event(held: true, momentum: 3, time: 1)))
+        XCTAssertNil(f.filter(event(held: false, time: 1.1)), "a finished glide ends the gesture sooner")
+    }
+
+    func testWheelNotchesAndInversion() {
+        var f = ScrollFilter()
+        XCTAssertEqual(f.filter(event(held: true, continuous: false, dx: 1, time: 0))?.delta, -12)
+        f.invert = true
+        XCTAssertEqual(f.filter(event(held: true, dx: 5, time: 1))?.delta, 5)
+    }
+}

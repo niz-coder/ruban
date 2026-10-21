@@ -53,8 +53,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func startTiling() {
-        wm.start()
-        ScrollTap.shared.start() // lets events through untouched while the option is off
+        wm.start() // also installs the scroll tap when it has something to do
         TrackpadSwipe.shared.start(fingers: settings.swipeFingers)
         refreshStatus()
     }
@@ -144,10 +143,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func toggleRunning() {
         wm.toggle()
-        if wm.running {
-            ScrollTap.shared.start()
-            TrackpadSwipe.shared.start(fingers: settings.swipeFingers)
-        }
+        if wm.running { TrackpadSwipe.shared.start(fingers: settings.swipeFingers) }
         refreshStatus()
     }
 
