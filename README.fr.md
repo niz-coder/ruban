@@ -35,6 +35,8 @@ autres : la bande s'allonge, et tu la fais défiler au clavier ou en glissant tr
   fenêtre, ou entre deux, pour lui donner sa propre colonne. Un aperçu translucide montre où elle va
   atterrir avant que tu lâches. Ça marche aussi d'un écran à l'autre.
 - **Piles et onglets.** Plusieurs fenêtres dans une colonne, hauteurs réglables, ou colonne en onglets.
+  Ruban retient la hauteur minimale des apps qui refusent de rétrécir : une pile qui ne tient pas à
+  l'écran s'affiche en onglets au lieu de déborder en bas.
 - **Colonnes épinglées** au bord gauche ou droit pendant que le reste défile.
 - **Indicateur de bande** givré : clique une tuile pour y aller, lâche-la sur une autre pour réunir
   les deux colonnes en une pile, ou entre deux tuiles pour déplacer la colonne.

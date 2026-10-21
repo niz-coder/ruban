@@ -377,3 +377,42 @@ final class ScrollFilterTests: XCTestCase {
         XCTAssertEqual(f.filter(event(held: true, dx: 5, time: 1))?.delta, 5)
     }
 }
+
+final class StackMinimumTests: XCTestCase {
+    func testSharesFollowWeightsWhenNothingIsTooSmall() {
+        let h = Layout.stackHeights(total: 808, gap: 8, weights: [1, 1], minimums: [0, 0])!
+        XCTAssertEqual(h[0], 400, accuracy: 0.01)
+        XCTAssertEqual(h[1], 400, accuracy: 0.01)
+    }
+
+    func testAWindowWithAMinimumGetsItAndTheOthersShrink() {
+        // 849 pt column, one app refuses less than 600: it gets 600, the other the rest.
+        let h = Layout.stackHeights(total: 849, gap: 8, weights: [1, 1], minimums: [0, 600])!
+        XCTAssertEqual(h[1], 600, accuracy: 0.01)
+        XCTAssertEqual(h[0], 241, accuracy: 0.01)
+    }
+
+    func testMinimumsThatDontFitGiveNothing() {
+        // Claude (400) and DeepSeek (600) can't both fit above each other in 849 pt.
+        XCTAssertNil(Layout.stackHeights(total: 849, gap: 8, weights: [1, 1], minimums: [400, 600]))
+    }
+
+    func testAStackTooTallForTheScreenIsShownAsTabs() {
+        var s = Strip()
+        s.insert(1, width: 0.5, after: nil)
+        s.insert(2, width: 0.5, after: 0)
+        s.focused = 1
+        _ = s.stackIntoNeighbor(-1, present: [1, 2])
+        let p = LayoutParams(area: CGRect(x: 0, y: 33, width: 1470, height: 865), screen: CGRect(x: 0, y: 0, width: 1470, height: 956), gap: 8, centre: .never)
+        let g = Layout.geometry(s, present: [1, 2], p)
+        let mins: [WindowID: Double] = [1: 400, 2: 600]
+        let f = Layout.frames(s, present: [1, 2], p, geometry: g, scroll: 0, minHeights: mins)
+        XCTAssertEqual(f[1], f[2], "both full height, like tabs")
+        XCTAssertEqual(f[1]!.height, 849)
+        XCTAssertFalse(Layout.showsStacked(s.columns[0], present: [1, 2], minHeights: mins, height: 849, gap: 8))
+        XCTAssertTrue(Layout.showsStacked(s.columns[0], present: [1, 2], minHeights: [2: 600], height: 849, gap: 8))
+        let fits = Layout.frames(s, present: [1, 2], p, geometry: g, scroll: 0, minHeights: [2: 600])
+        XCTAssertEqual(fits[2]!.height, 600, accuracy: 1)
+        XCTAssertEqual(fits[2]!.maxY, 890, accuracy: 1, "the stack still ends at the bottom of the screen")
+    }
+}

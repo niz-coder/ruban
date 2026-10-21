@@ -137,23 +137,58 @@ public enum Layout {
         return (s, most.column)
     }
 
-    /// Target frame of every present window for a given scroll offset.
-    public static func frames(_ strip: Strip, present: Set<WindowID>, _ p: LayoutParams, geometry g: Geometry, scroll: Double) -> [WindowID: CGRect] {
+    /// Heights for the windows of a stack: shared by weight, but never below a window's minimum
+    /// (some apps refuse to get shorter). Nil when the minimums alone don't fit in `total`.
+    public static func stackHeights(total: Double, gap: Double, weights: [Double], minimums: [Double]) -> [Double]? {
+        let n = weights.count
+        let available = total - gap * Double(max(n - 1, 0))
+        guard n > 0, minimums.reduce(0, +) <= available + 0.5 else { return nil }
+        // Windows whose share falls below their minimum get the minimum; the rest share what is left.
+        var fixed = [Double?](repeating: nil, count: n)
+        while true {
+            let free = (0..<n).filter { fixed[$0] == nil }
+            let remaining = available - fixed.compactMap { $0 }.reduce(0, +)
+            let weightSum = free.reduce(0.0) { $0 + weights[$1] }
+            var changed = false
+            for i in free where remaining * weights[i] / weightSum < minimums[i] {
+                fixed[i] = minimums[i]
+                changed = true
+            }
+            if !changed || free.isEmpty {
+                return (0..<n).map { fixed[$0] ?? remaining * weights[$0] / weightSum }
+            }
+        }
+    }
+
+    /// Whether a column shows its windows one above the other. A tabbed column doesn't, and neither
+    /// does a stack whose windows' minimum heights can't all fit on screen: it falls back to tabs.
+    public static func showsStacked(_ c: Column, present: Set<WindowID>, minHeights: [WindowID: Double], height: Double, gap: Double) -> Bool {
+        let live = c.windows.enumerated().filter { present.contains($0.element) }
+        guard !c.tabbed, live.count > 1 else { return false }
+        return stackHeights(total: height, gap: gap, weights: live.map { c.weights[$0.offset] },
+                            minimums: live.map { minHeights[$0.element] ?? 0 }) != nil
+    }
+
+    /// Target frame of every present window for a given scroll offset. `minHeights` holds the heights
+    /// apps refused to go below.
+    public static func frames(_ strip: Strip, present: Set<WindowID>, _ p: LayoutParams, geometry g: Geometry, scroll: Double,
+                              minHeights: [WindowID: Double] = [:]) -> [WindowID: CGRect] {
         var out: [WindowID: CGRect] = [:]
 
         func place(_ c: Column, in rect: CGRect) {
             let live = c.windows.enumerated().filter { present.contains($0.element) }
             guard !live.isEmpty else { return }
-            if c.tabbed || live.count == 1 {
+            let heights = c.tabbed || live.count == 1 ? nil
+                : stackHeights(total: rect.height, gap: p.gap, weights: live.map { c.weights[$0.offset] },
+                               minimums: live.map { minHeights[$0.element] ?? 0 })
+            guard let heights else {
+                // One window, a tabbed column, or a stack too tall for the screen: full height each.
                 for (_, w) in live { out[w] = rect }
                 return
             }
-            let totalWeight = live.reduce(0.0) { $0 + c.weights[$1.offset] }
-            let available = rect.height - p.gap * Double(live.count - 1)
             var y = rect.minY
-            for (k, (index, w)) in live.enumerated() {
-                var h = (available * c.weights[index] / totalWeight).rounded()
-                if k == live.count - 1 { h = rect.maxY - y }
+            for (k, (_, w)) in live.enumerated() {
+                let h = k == live.count - 1 ? rect.maxY - y : heights[k].rounded()
                 out[w] = CGRect(x: rect.minX, y: y, width: rect.width, height: h)
                 y += h + p.gap
             }

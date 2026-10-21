@@ -29,7 +29,7 @@ final class StripIndicator {
     }
 
     func show(key: String, strip: Strip, present: Set<WindowID>, windows: [WindowID: TrackedWindow],
-              geometry g: Geometry, params: LayoutParams, holdWhile flags: NSEvent.ModifierFlags) {
+              geometry g: Geometry, params: LayoutParams, tabbed: Set<Int>, holdWhile flags: NSEvent.ModifierFlags) {
         self.key = key
         holdFlags = flags
         var tiles: [StripBarView.Tile] = []
@@ -45,7 +45,7 @@ final class StripIndicator {
                 return span.x + span.width > strip.scroll + 1 && span.x < strip.scroll + g.scrollWidth - 1
             }()
             tiles.append(.init(column: i, width: c.width, icons: icons, count: shown.count,
-                               focused: i == strip.focused, visible: visible, pinned: c.pinned != nil, tabbed: c.tabbed))
+                               focused: i == strip.focused, visible: visible, pinned: c.pinned != nil, tabbed: tabbed.contains(i)))
         }
         guard !tiles.isEmpty else { return hide(animated: true) }
         hideAt = CACurrentMediaTime() + 0.9

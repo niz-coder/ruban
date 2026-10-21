@@ -60,6 +60,9 @@ final class WindowManager {
     private var pendingFocus: (id: WindowID, until: CFTimeInterval)?
     private var stubbornCheck: DispatchWorkItem?
     private var sizeRetried = Set<WindowID>()
+    /// Heights apps refused to go below, learnt as they refuse, per app and kept across launches.
+    private var appMinHeights = UserDefaults.standard.dictionary(forKey: "appMinHeights") as? [String: Double] ?? [:]
+    private var minHeights: [WindowID: Double] { windows.compactMapValues { appMinHeights[$0.bundleID] } }
     private var suspectMoves: [WindowID: Int] = [:]
     /// Windows judged not tileable (dialogs, panels, full-screen windows), with when. They are judged
     /// again every few seconds: a window leaving full screen, or one its app finishes setting up,
@@ -603,7 +606,7 @@ final class WindowManager {
             strip.scroll = Layout.revealScroll(g, focused: strip.focused, current: strip.scroll, mode: settings.centreMode)
             strips[key] = strip
         }
-        let targets = Layout.frames(strip, present: present, d.params, geometry: g, scroll: strip.scroll)
+        let targets = Layout.frames(strip, present: present, d.params, geometry: g, scroll: strip.scroll, minHeights: minHeights)
         let jobs = targets.compactMap { id, to -> (WindowID, from: CGRect, to: CGRect)? in
             guard windows[id] != nil else { return nil }
             let from = virtual[id] ?? applied[id] ?? to
@@ -612,7 +615,7 @@ final class WindowManager {
         }
         prepareParking(key, strip: strip, geometry: g, display: d)
         animator.run(jobs, animated: animated && settings.animate, duration: settings.animationDuration)
-        raiseTabbedActive(strip)
+        raiseTabbedActive(strip, height: d.params.inner.height)
     }
 
     /// Remembers where this strip's windows scroll and which ones are pinned, for `place`.
@@ -629,7 +632,7 @@ final class WindowManager {
         guard let d = displays.first(where: { $0.key == key }), let strip = strips[key] else { return }
         let g = Layout.geometry(strip, present: present, d.params)
         prepareParking(key, strip: strip, geometry: g, display: d)
-        for (id, frame) in Layout.frames(strip, present: present, d.params, geometry: g, scroll: strip.scroll) {
+        for (id, frame) in Layout.frames(strip, present: present, d.params, geometry: g, scroll: strip.scroll, minHeights: minHeights) {
             animator.cancel(id)
             place(id, virtual: frame)
         }
@@ -695,21 +698,44 @@ final class WindowManager {
         sizeRetried.remove(id)
         applied[id] = actual
         virtual[id] = virtual[id].map { CGRect(origin: $0.origin, size: actual.size) }
-        // Only grow: a window wider than asked has a minimum size. Narrower is harmless.
-        guard actual.width > expected.width + 2, let key = stripKeyOf[id], var strip = strips[key],
-              let ci = strip.columnIndex(of: id), let d = displays.first(where: { $0.key == key }) else { return }
+        guard let key = stripKeyOf[id], var strip = strips[key], let ci = strip.columnIndex(of: id),
+              let d = displays.first(where: { $0.key == key }) else { return }
+        var relayout = false
+        // Taller than asked: the app has a minimum height. Stacks give it at least that from now on,
+        // or show as tabs when it can't fit. (Shorter than asked is harmless.)
+        if actual.height > expected.height + 2, actual.height > (appMinHeights[w.bundleID] ?? 0) + 1 {
+            appMinHeights[w.bundleID] = actual.height
+            UserDefaults.standard.set(appMinHeights, forKey: "appMinHeights")
+            Log.write("window \(id) (\(w.bundleID)) needs at least \(Int(actual.height)) pt of height")
+            relayout = true
+        }
+        // Wider than asked: a minimum width. The column widens so it never overlaps the next one.
         let needed = Layout.fraction(forWidth: actual.width, inner: d.params.inner.width, gap: d.params.gap)
-        guard needed > strip.columns[ci].width + 0.002 else { return }
-        Log.write("window \(id) (\(w.bundleID)) insists on \(Int(actual.width)) pt, column widened")
-        strip.columns[ci].width = needed
-        strips[key] = strip
-        layout(key, animated: true)
+        if actual.width > expected.width + 2, needed > strip.columns[ci].width + 0.002 {
+            Log.write("window \(id) (\(w.bundleID)) insists on \(Int(actual.width)) pt, column widened")
+            strip.columns[ci].width = needed
+            strips[key] = strip
+            relayout = true
+        }
+        if relayout { layout(key, animated: true) }
     }
 
-    private func raiseTabbedActive(_ strip: Strip) {
-        guard strip.columns.indices.contains(strip.focused), strip.columns[strip.focused].tabbed,
-              let id = strip.focusedWindow else { return }
+    /// In a column shown as tabs (asked for, or a stack too tall for the screen), the active window
+    /// goes in front of the others.
+    private func raiseTabbedActive(_ strip: Strip, height: Double) {
+        guard strip.columns.indices.contains(strip.focused), let id = strip.focusedWindow else { return }
+        let c = strip.columns[strip.focused]
+        guard c.windows.filter(present.contains).count > 1,
+              !Layout.showsStacked(c, present: present, minHeights: minHeights, height: height, gap: settings.gap) else { return }
         windows[id]?.element.raise()
+    }
+
+    /// Strip columns currently shown as tabs, for the indicator.
+    private func tabbedColumns(_ strip: Strip, height: Double) -> Set<Int> {
+        Set(strip.columns.indices.filter { i in
+            strip.columns[i].windows.filter(present.contains).count > 1
+                && !Layout.showsStacked(strip.columns[i], present: present, minHeights: minHeights, height: height, gap: settings.gap)
+        })
     }
 
     func updateBorder() {
@@ -1034,6 +1060,7 @@ final class WindowManager {
         }
         RunLoop.main.add(timer, forMode: .common)
         dragTimer = timer
+        Log.write("drag: following window \(id) (\(windows[id]?.bundleID ?? "?"))")
     }
 
     /// What letting go of a dragged window right now would do: the strip it lands on, the drop,
@@ -1046,7 +1073,8 @@ final class WindowManager {
         let mouse = mouseLocationAX
         guard let d = display(containing: mouse) else { return nil }
         let strip = strips[d.key] ?? Strip()
-        var frames = Layout.frames(strip, present: present, d.params, geometry: Layout.geometry(strip, present: present, d.params), scroll: strip.scroll)
+        var frames = Layout.frames(strip, present: present, d.params, geometry: Layout.geometry(strip, present: present, d.params),
+                                   scroll: strip.scroll, minHeights: minHeights)
         frames[id] = nil
         let drop = Layout.dropTarget(at: mouse, moving: id, in: strip, frames: frames)
 
@@ -1061,7 +1089,7 @@ final class WindowManager {
         let shown = present.union([id])
         let g = Layout.geometry(result, present: shown, d.params)
         let scroll = Layout.revealScroll(g, focused: result.focused, current: strip.scroll, mode: settings.centreMode)
-        guard let frame = Layout.frames(result, present: shown, d.params, geometry: g, scroll: scroll)[id] else { return nil }
+        guard let frame = Layout.frames(result, present: shown, d.params, geometry: g, scroll: scroll, minHeights: minHeights)[id] else { return nil }
         return (d.key, drop, frame)
     }
 
@@ -1076,6 +1104,7 @@ final class WindowManager {
             strip.columns[ci].widthBeforeFull = nil
             strips[key] = strip
         } else if let landing = pendingDrop(for: id) {
+            Log.write("drag: window \(id) dropped, \(landing.drop)")
             // Dragged by its title bar: into a stack, or as a column of its own, wherever it was dropped.
             if landing.key == key {
                 strip.move(id, to: landing.drop)
@@ -1148,7 +1177,7 @@ final class WindowManager {
         guard settings.showIndicator, let strip = strips[key], let d = displays.first(where: { $0.key == key }) else { return }
         let g = Layout.geometry(strip, present: present, d.params)
         indicator.show(key: key, strip: strip, present: present, windows: windows, geometry: g, params: d.params,
-                       holdWhile: settings.modifiers.flags)
+                       tabbed: tabbedColumns(strip, height: d.params.inner.height), holdWhile: settings.modifiers.flags)
     }
 
     private var saveWork: DispatchWorkItem?

@@ -36,7 +36,8 @@ longer, and you scroll through it with the keyboard or a three-finger swipe.
   windows to give it a column of its own. A translucent preview shows where it will land before you
   let go. Works across displays too.
 - **Stacks and tabs.** Put several windows in one column, resize them inside the stack, or turn the
-  stack into a tabbed column.
+  stack into a tabbed column. Ruban learns the minimum height of apps that refuse to get shorter; a
+  stack whose windows can't all fit on screen is shown as tabs instead of spilling off the bottom.
 - **Pinned columns.** Keep one window at the left or right edge while the rest scrolls beside it.
 - **Strip indicator.** A frosted bar with one tile per column appears while you move around. Click
   a tile to jump there; drag it onto another tile to merge the two columns into one stack, or between
