@@ -19,7 +19,8 @@ git fetch -q origin main --tags
 [ -z "$NOTES" ] || [ -f "$NOTES" ] || fail "no notes file at $NOTES"
 # A personal Apple certificate would put its owner's email address in every published copy, and
 # the installed copies only accept updates signed like themselves.
-security find-identity -p codesigning | grep -q '"Ruban"' || fail "no \"Ruban\" signing certificate in the keychain"
+# (grep without -q reads to the end: with pipefail, quitting early would fail the pipe.)
+security find-identity -p codesigning | grep '"Ruban"' >/dev/null || fail "no \"Ruban\" signing certificate in the keychain"
 
 PLIST=Resources/Info.plist
 if [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$PLIST")" != "$VERSION" ]; then
@@ -30,7 +31,7 @@ fi
 swift test
 RUBAN_SIGN_IDENTITY=Ruban ./build.sh --no-install
 codesign --verify --strict build/Ruban.app
-codesign -dvv build/Ruban.app 2>&1 | grep -qx "Authority=Ruban" || fail "build/Ruban.app is not signed with the Ruban certificate"
+codesign -dvv build/Ruban.app 2>&1 | grep -x "Authority=Ruban" >/dev/null || fail "build/Ruban.app is not signed with the Ruban certificate"
 
 ZIP="build/Ruban-$VERSION.zip"
 rm -f "$ZIP"
