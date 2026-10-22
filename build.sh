@@ -37,15 +37,16 @@ cp build/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 # Development certificate, then ad hoc. RUBAN_SIGN_IDENTITY overrides the choice.
 NAME=${RUBAN_SIGN_IDENTITY:-}
 if [ -z "$NAME" ]; then
-  NAME=$(security find-identity -p codesigning | awk -F'"' '$2 == "Ruban" {print $2; exit}')
+  NAME=$(security find-identity -p codesigning | awk -F'"' '$2 == "Ruban" && !n++ {print $2}')
 fi
 if [ -z "$NAME" ]; then
-  NAME=$(security find-identity -v -p codesigning | awk -F'"' '/Developer ID Application|Apple Development/ {print $2; exit}')
+  NAME=$(security find-identity -v -p codesigning | awk -F'"' '/Developer ID Application|Apple Development/ && !n++ {print $2}')
 fi
 # By hash: a self-signed certificate is not "valid" for macOS, which is fine for signing.
+# (awk reads to the end: with pipefail, stopping early could fail the pipe.)
 IDENTITY=-
 if [ -n "$NAME" ]; then
-  IDENTITY=$(security find-identity -p codesigning | awk -v n="$NAME" -F'"' '$2 == n {split($1, a, " "); print a[2]; exit}')
+  IDENTITY=$(security find-identity -p codesigning | awk -v n="$NAME" -F'"' '$2 == n && !k++ {split($1, a, " "); print a[2]}')
   [ -n "$IDENTITY" ] || { echo "Pas de certificat de signature « $NAME » dans le trousseau." >&2; exit 1; }
 fi
 codesign --force --options runtime --sign "$IDENTITY" "$APP"
