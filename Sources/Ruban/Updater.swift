@@ -199,7 +199,14 @@ final class Updater: ObservableObject {
               fi
             fi
             rm -rf "$4"
-            /usr/bin/open "$2"
+            # macOS can take a moment to forget the Ruban that just quit, and until then open does
+            # nothing: try again until the new one runs.
+            for attempt in 1 2 3 4 5 6 7 8 9 10; do
+              /usr/bin/open "$2"
+              sleep 1
+              if /usr/bin/pgrep -f "^$2/Contents/MacOS/" >/dev/null; then exit 0; fi
+            done
+            echo "$(date +%T) update: could not open the new Ruban, open it from $2" >> "$5"
             """
         let log = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/Ruban.log").path
         guard Spawn.detached(["/bin/sh", "-c", script, "sh", String(getpid()), Bundle.main.bundleURL.path, new.path, work.path, log],
