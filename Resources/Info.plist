@@ -4,6 +4,8 @@
 <dict>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>fr</string>
+	<key>CFBundleDisplayName</key>
+	<string>Ruban</string>
 	<key>CFBundleExecutable</key>
 	<string>Ruban</string>
 	<key>CFBundleIconFile</key>
@@ -14,26 +16,10 @@
 	<string>6.0</string>
 	<key>CFBundleName</key>
 	<string>Ruban</string>
-	<key>CFBundleDisplayName</key>
-	<string>Ruban</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.1.0</string>
-	<key>CFBundleVersion</key>
-	<string>1</string>
-	<key>LSMinimumSystemVersion</key>
-	<string>14.0</string>
-	<key>LSUIElement</key>
-	<true/>
-	<key>LSApplicationCategoryType</key>
-	<string>public.app-category.productivity</string>
-	<key>NSHighResolutionCapable</key>
-	<true/>
-	<key>NSHumanReadableCopyright</key>
-	<string>Ruban — gestionnaire de fenêtres à défilement</string>
-	<key>RubanUpdateRepository</key>
-	<string>niz-coder/ruban</string>
+	<string>0.1.1</string>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>
@@ -45,5 +31,19 @@
 			</array>
 		</dict>
 	</array>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.productivity</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>14.0</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSHumanReadableCopyright</key>
+	<string>Ruban — gestionnaire de fenêtres à défilement</string>
+	<key>RubanUpdateRepository</key>
+	<string>niz-coder/ruban</string>
 </dict>
 </plist>
