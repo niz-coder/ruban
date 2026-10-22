@@ -43,6 +43,20 @@ enum Snapshot {
         print("tile 4 between tiles 1 and 2:", bar.drop(at: gap, from: 4).map { "\($0)" } ?? "nothing")
         print("tile 4 over itself:", bar.drop(at: bar.tileCenter(4), from: 4).map { "\($0)" } ?? "nothing")
         print("tile 0 just right of itself:", bar.drop(at: CGPoint(x: (bar.tileCenter(0).x + bar.tileCenter(1).x) / 2, y: stackPoint.y), from: 0).map { "\($0)" } ?? "nothing")
+
+        // The update window, offering a made-up release and after a failure.
+        let release = Updater.Release(
+            tagName: "v9.9.0", body: "- **Plus rapide** : la bande suit mieux tes doigts.\n- Corrige un oubli quand un écran se débranche.",
+            htmlUrl: URL(string: "https://github.com/niz-coder/ruban/releases")!, assets: [])
+        let updater = Updater()
+        for (name, phase) in [("available", Updater.Phase.available), ("downloading", .downloading(0.4)),
+                              ("failed", .failed("Cette mise à jour n'est pas signée comme ta copie de Ruban : elle n'a pas été installée."))] {
+            updater.preview(phase, release: release)
+            // A window gives it its background; drawn alone, it needs one.
+            let view = NSHostingView(rootView: UpdateView(updater: updater).background(Color(nsColor: .windowBackgroundColor)))
+            view.frame = CGRect(origin: .zero, size: view.fittingSize)
+            write(view, to: "\(dir)/update-\(name).png")
+        }
     }
 
     private static func write(_ view: NSView, to path: String) {

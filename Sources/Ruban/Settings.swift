@@ -29,6 +29,8 @@ final class Settings: ObservableObject {
     @Published var swipeFingers: Int { didSet { d.set(swipeFingers, forKey: "swipeFingers"); TrackpadSwipe.shared.start(fingers: swipeFingers) } }
     @Published var invertScroll: Bool { didSet { d.set(invertScroll, forKey: "invertScroll"); ScrollTap.shared.refresh() } }
     @Published var restoreSession: Bool { didSet { d.set(restoreSession, forKey: "restoreSession") } }
+    /// Look for a new version on GitHub once a day.
+    @Published var checkForUpdates: Bool { didSet { d.set(checkForUpdates, forKey: "checkForUpdates") } }
     @Published var onboarded: Bool { didSet { d.set(onboarded, forKey: "onboarded") } }
 
     private init() {
@@ -48,6 +50,7 @@ final class Settings: ObservableObject {
             "swipeFingers": 3,
             "invertScroll": false,
             "restoreSession": true,
+            "checkForUpdates": true,
             "onboarded": false,
         ])
         gap = d.double(forKey: "gap")
@@ -65,6 +68,7 @@ final class Settings: ObservableObject {
         swipeFingers = d.integer(forKey: "swipeFingers")
         invertScroll = d.bool(forKey: "invertScroll")
         restoreSession = d.bool(forKey: "restoreSession")
+        checkForUpdates = d.bool(forKey: "checkForUpdates")
         onboarded = d.bool(forKey: "onboarded")
     }
 

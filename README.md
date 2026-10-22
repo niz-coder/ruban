@@ -55,7 +55,27 @@ longer, and you scroll through it with the keyboard or a three-finger swipe.
 
 ## Install
 
-Requirements: macOS 14 or later on Apple silicon, and Xcode (or the Command Line Tools) for Swift 5.9+.
+Ruban needs macOS 14 or later on Apple silicon. Download `Ruban-x.y.z.zip` from the
+[latest release](https://github.com/niz-coder/ruban/releases/latest), unzip it and move Ruban.app
+to your Applications folder.
+
+Ruban is not notarized by Apple, so macOS refuses the first launch. Open System Settings → Privacy &
+Security, scroll down to the message about Ruban and click **Open Anyway**. This is needed once.
+
+On first launch, macOS asks for the **Accessibility** permission, which is how any window manager
+moves windows: System Settings → Privacy & Security → Accessibility → turn Ruban on. Ruban starts
+tiling as soon as it is granted.
+
+### Updates
+
+Ruban looks for a new release on GitHub once a day, and when you choose *Chercher une mise à jour…*
+in its menu. Installing one downloads it, checks that it is signed with the same certificate as your
+copy, then quits Ruban, swaps the app and opens it again: your windows come back to their places.
+The daily check is one request to `api.github.com`; turn it off in Settings → General.
+
+### Build from source
+
+With Xcode (or the Command Line Tools) for Swift 5.9+:
 
 ```bash
 git clone https://github.com/niz-coder/ruban.git
@@ -64,13 +84,11 @@ cd ruban
 ```
 
 `build.sh` compiles a release build, draws the icon, signs the app and copies it to
-`~/Applications/Ruban.app`. It signs with your *Apple Development* or *Developer ID* certificate
-when you have one, so the Accessibility permission survives rebuilds; otherwise it signs ad hoc and
-you will need to grant the permission again after each rebuild.
-
-On first launch, macOS asks for the **Accessibility** permission, which is how any window manager
-moves windows: System Settings → Privacy & Security → Accessibility → turn Ruban on. Ruban starts
-tiling as soon as it is granted.
+`~/Applications/Ruban.app`. It signs with a certificate named *Ruban* when your keychain has one
+(the releases are signed with it), otherwise with your *Developer ID* or *Apple Development*
+certificate, so the Accessibility permission survives rebuilds; without any, it signs ad hoc and you
+will need to grant the permission again after each rebuild. A copy only accepts updates signed like
+itself, so one you built with your own certificate does not update itself from the releases.
 
 ### Free the three-finger swipe
 
@@ -163,7 +181,8 @@ also means Ruban cannot ship on the Mac App Store.
 ```bash
 swift test                                  # layout engine and swipe recogniser
 swift build && .build/debug/Ruban           # run without installing
-.build/debug/Ruban --snapshot /tmp/ruban    # render the settings tabs and the indicator to PNG
+.build/debug/Ruban --snapshot /tmp/ruban    # render the settings, the indicator and the update window to PNG
+scripts/release.sh 0.2.0 notes.md           # test, build, sign, zip and publish a release on GitHub
 ```
 
 The engine log is at `~/Library/Logs/Ruban.log`.

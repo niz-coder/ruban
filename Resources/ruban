@@ -6,7 +6,7 @@ jump-1 jump-2 jump-3 jump-4 jump-5 jump-6 jump-7 jump-8 jump-9
 move-left move-right move-up move-down send-to-next-display
 cycle-width full-width centre wider narrower taller shorter equalize-heights
 pin-left pin-right stack-left stack-right pop-left pop-right toggle-tabbed toggle-float
-toggle start stop settings"
+toggle start stop settings check-for-updates"
 
 if [ -z "$1" ] || [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
   cat <<'EOF'
@@ -16,7 +16,7 @@ usage: ruban <action>
   move-left move-right move-up move-down send-to-next-display
   cycle-width full-width centre wider narrower taller shorter equalize-heights
   pin-left pin-right stack-left stack-right pop-left pop-right toggle-tabbed toggle-float
-  toggle start stop settings
+  toggle start stop settings check-for-updates
 EOF
   exit 0
 fi

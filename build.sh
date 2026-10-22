@@ -13,6 +13,8 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/Ruban"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
+# The build number counts the commits, so every build of a newer version has a higher one.
+/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $(git rev-list --count HEAD 2>/dev/null || echo 1)" "$APP/Contents/Info.plist"
 cp Resources/ruban "$APP/Contents/Resources/ruban"
 chmod +x "$APP/Contents/Resources/ruban"
 
@@ -29,10 +31,25 @@ if [ ! -f build/AppIcon.icns ]; then
 fi
 cp build/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 
-# Sign with a stable identity so the Accessibility permission survives rebuilds.
-IDENTITY=$(security find-identity -v -p codesigning | awk -F'"' '/Apple Development|Developer ID Application/ {print $2; exit}')
-codesign --force --options runtime --sign "${IDENTITY:--}" "$APP"
-echo "Signé avec : ${IDENTITY:-ad hoc}"
+# Sign with a stable identity so the Accessibility permission survives rebuilds and updates.
+# First choice: the self-signed "Ruban" certificate the releases are signed with (it names nobody,
+# and an app signed with it accepts the updates from GitHub). Then a Developer ID or Apple
+# Development certificate, then ad hoc. RUBAN_SIGN_IDENTITY overrides the choice.
+NAME=${RUBAN_SIGN_IDENTITY:-}
+if [ -z "$NAME" ]; then
+  NAME=$(security find-identity -p codesigning | awk -F'"' '$2 == "Ruban" {print $2; exit}')
+fi
+if [ -z "$NAME" ]; then
+  NAME=$(security find-identity -v -p codesigning | awk -F'"' '/Developer ID Application|Apple Development/ {print $2; exit}')
+fi
+# By hash: a self-signed certificate is not "valid" for macOS, which is fine for signing.
+IDENTITY=-
+if [ -n "$NAME" ]; then
+  IDENTITY=$(security find-identity -p codesigning | awk -v n="$NAME" -F'"' '$2 == n {split($1, a, " "); print a[2]; exit}')
+  [ -n "$IDENTITY" ] || { echo "Pas de certificat de signature « $NAME » dans le trousseau." >&2; exit 1; }
+fi
+codesign --force --options runtime --sign "$IDENTITY" "$APP"
+echo "Signé avec : ${NAME:-ad hoc}"
 
 if [ "${1:-}" != "--no-install" ]; then
   DEST="$HOME/Applications/Ruban.app"

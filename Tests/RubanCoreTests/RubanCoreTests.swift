@@ -474,3 +474,22 @@ final class StackMinimumTests: XCTestCase {
         XCTAssertEqual(fits[2]!.maxY, 890, accuracy: 1, "the stack still ends at the bottom of the screen")
     }
 }
+
+final class VersionTests: XCTestCase {
+    func testParsingTagsAndNumbers() {
+        XCTAssertEqual(Version("v0.1.0")?.description, "0.1.0")
+        XCTAssertEqual(Version("1.2")?.parts, [1, 2])
+        XCTAssertNil(Version("0.2.0-beta"), "pre-releases are not offered")
+        XCTAssertNil(Version(""))
+        XCTAssertNil(Version("v1..2"))
+        XCTAssertNil(Version("1.2.3.4.5"))
+    }
+
+    func testOrdering() {
+        XCTAssertLessThan(Version("0.1.0")!, Version("0.2.0")!)
+        XCTAssertLessThan(Version("0.9.9")!, Version("0.10.0")!, "numbers, not text")
+        XCTAssertLessThan(Version("1.0")!, Version("1.0.1")!)
+        XCTAssertEqual(Version("1.0")!, Version("v1.0.0")!)
+        XCTAssertFalse(Version("1.0.0")! < Version("1.0")!)
+    }
+}

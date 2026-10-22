@@ -14,6 +14,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                                                      forEventClass: AEEventClass(kInternetEventClass), andEventID: AEEventID(kAEGetURL))
         AXUIElementSetMessagingTimeout(AXUIElementCreateSystemWide(), 0.4)
         Guardian.spawn()
+        Updater.shared.start()
         setupStatusItem()
 
         Hotkeys.shared.onAction = { [weak self] action in
@@ -105,6 +106,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let count = wm.present.count
             menu.addItem(note("\(count) fenêtre\(count > 1 ? "s" : "") sur la bande"))
         }
+        if let version = Updater.shared.available?.version {
+            let it = item("Installer Ruban \(version)…", #selector(showUpdate))
+            it.image = NSImage(systemSymbolName: "arrow.down.circle", accessibilityDescription: nil)
+            menu.addItem(it)
+        }
         if wm.running && wm.swipeConflict && settings.swipeFingers > 0 {
             let it = item("Balayage à \(settings.swipeFingers) doigts laissé à macOS…", #selector(showGestureSettings))
             it.image = NSImage(systemSymbolName: "exclamationmark.triangle", accessibilityDescription: "Attention")
@@ -133,6 +139,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             menu.addItem(it)
         }
         menu.addItem(.separator())
+        if Updater.shared.isEnabled {
+            menu.addItem(item("Chercher une mise à jour…", #selector(checkForUpdates)))
+        }
         menu.addItem(item("Réglages…", #selector(showSettings), key: ","))
         menu.addItem(item("Quitter Ruban", #selector(quit), key: "q"))
     }
@@ -194,6 +203,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func quit() { NSApp.terminate(nil) }
 
+    @objc private func showUpdate() { Updater.shared.showWindow(activate: true) }
+
+    @objc private func checkForUpdates() { Updater.shared.check(manual: true) }
+
     // MARK: URL scheme: ruban://focus-right, ruban://cycle-width …
 
     @objc private func handleURL(_ event: NSAppleEventDescriptor, reply: NSAppleEventDescriptor) {
@@ -201,6 +214,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let name = url.host ?? url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         switch name {
         case "settings": showSettings()
+        case "check-for-updates": Updater.shared.check(manual: true)
         case "start": if !wm.running { toggleRunning() }
         case "stop": if wm.running { toggleRunning() }
         default:

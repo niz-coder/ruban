@@ -53,7 +53,28 @@ autres : la bande s'allonge, et tu la fais défiler au clavier ou en glissant tr
 
 ## Installer
 
-Il faut macOS 14 ou plus récent sur Apple silicon, et Xcode (ou les Command Line Tools).
+Il faut macOS 14 ou plus récent sur Apple silicon. Télécharge `Ruban-x.y.z.zip` depuis la
+[dernière version](https://github.com/niz-coder/ruban/releases/latest), décompresse-le et mets
+Ruban.app dans ton dossier Applications.
+
+Ruban n'est pas notarisé par Apple, donc macOS refuse le premier lancement : ouvre Réglages Système →
+Confidentialité et sécurité, descends jusqu'au message sur Ruban et clique **Ouvrir quand même**.
+Une seule fois suffit.
+
+Au premier lancement, macOS demande l'autorisation **Accessibilité** : Réglages Système →
+Confidentialité et sécurité → Accessibilité → active Ruban. Il démarre dès qu'elle est donnée.
+
+### Mises à jour
+
+Ruban cherche une nouvelle version sur GitHub une fois par jour, et quand tu choisis *Chercher une
+mise à jour…* dans son menu. L'installer la télécharge, vérifie qu'elle est signée avec le même
+certificat que ta copie, puis ferme Ruban, remplace l'app et la rouvre : tes fenêtres reviennent à
+leur place. La vérification quotidienne est une seule requête à `api.github.com` ; elle se coupe dans
+Réglages → Général.
+
+### Compiler soi-même
+
+Il faut Xcode (ou les Command Line Tools).
 
 ```bash
 git clone https://github.com/niz-coder/ruban.git
@@ -61,12 +82,10 @@ cd ruban
 ./build.sh
 ```
 
-`build.sh` compile, dessine l'icône, signe l'app et la copie dans `~/Applications/Ruban.app`. Avec
-un certificat *Apple Development* ou *Developer ID*, l'autorisation Accessibilité survit aux
-recompilations ; sans certificat, l'app est signée ad hoc et il faut la redonner après chaque build.
-
-Au premier lancement, macOS demande l'autorisation **Accessibilité** : Réglages Système →
-Confidentialité et sécurité → Accessibilité → active Ruban. Il démarre dès qu'elle est donnée.
+`build.sh` compile, dessine l'icône, signe l'app et la copie dans `~/Applications/Ruban.app`. Avec un
+certificat nommé *Ruban* (celui des versions publiées), *Developer ID* ou *Apple Development*,
+l'autorisation Accessibilité survit aux recompilations ; sans certificat, l'app est signée ad hoc et
+il faut la redonner après chaque build. Une copie n'accepte que les mises à jour signées comme elle.
 
 ### Libérer le glissé à trois doigts
 

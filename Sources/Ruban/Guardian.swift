@@ -21,27 +21,11 @@ enum Guardian {
     static func spawn() {
         guard let exe = Bundle.main.executablePath else { return }
         try? FileManager.default.removeItem(at: marker)
-
-        var attr: posix_spawnattr_t?
-        posix_spawnattr_init(&attr)
-        defer { posix_spawnattr_destroy(&attr) }
-        // Private, looked up at runtime: the guardian answers for itself, so macOS checks Ruban's
-        // Accessibility permission against it even once Ruban, which started it, is gone.
-        typealias Disclaim = @convention(c) (UnsafeMutablePointer<posix_spawnattr_t?>, Int32) -> Int32
-        if let p = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "responsibility_spawnattrs_setdisclaim") {
-            _ = unsafeBitCast(p, to: Disclaim.self)(&attr, 1)
+        // It answers for itself, so macOS checks Ruban's Accessibility permission against it even
+        // once Ruban, which started it, is gone.
+        if let pid = Spawn.detached([exe, "--guard", String(getpid())], disclaim: true) {
+            Log.write("guardian \(pid) is watching")
         }
-        var files: posix_spawn_file_actions_t?
-        posix_spawn_file_actions_init(&files)
-        defer { posix_spawn_file_actions_destroy(&files) }
-        for fd: Int32 in 0...2 { posix_spawn_file_actions_addopen(&files, fd, "/dev/null", fd == 0 ? O_RDONLY : O_WRONLY, 0) }
-
-        let args = [exe, "--guard", String(getpid())]
-        var argv: [UnsafeMutablePointer<CChar>?] = args.map { strdup($0) } + [nil]
-        defer { argv.forEach { free($0) } }
-        var pid: pid_t = 0
-        let status = posix_spawn(&pid, exe, &files, &attr, &argv, environ)
-        Log.write(status == 0 ? "guardian \(pid) is watching" : "guardian could not start: \(String(cString: strerror(status)))")
     }
 
     /// Says the windows are back on screen. Called right before a normal exit.

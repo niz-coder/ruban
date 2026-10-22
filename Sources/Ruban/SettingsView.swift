@@ -95,6 +95,17 @@ private struct GeneralTab: View {
                 Toggle("Restaurer l'ordre des colonnes au lancement", isOn: $s.restoreSession)
             }
 
+            if Updater.shared.isEnabled {
+                Section("Mises à jour") {
+                    Toggle("Chercher une nouvelle version chaque jour", isOn: $s.checkForUpdates)
+                    HStack {
+                        Text("Version \(Updater.shared.current?.description ?? "?")").foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Chercher maintenant") { Updater.shared.check(manual: true) }
+                    }
+                }
+            }
+
             Section("Les cinq raccourcis à connaître") {
                 Essential(keys: "\(s.modifiers.symbol) ← →", text: "Passer d'une fenêtre à l'autre (ou H / L)")
                 Essential(keys: "\(s.modifiers.symbol)⇧ ← →", text: "Déplacer la fenêtre sur la bande")
