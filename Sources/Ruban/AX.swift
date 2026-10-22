@@ -18,17 +18,25 @@ enum AX {
         }
     }
 
-    /// The window that has keyboard focus, as seen by the frontmost app.
-    static func focusedWindow() -> (AXUIElement, WindowID)? {
+    /// How long the main thread waits on an app before giving up on it. A key press must not wait
+    /// on a hung app; the scans, off the main thread, keep the global timeout.
+    static let quickTimeout: Float = 0.1
+
+    /// The window that has keyboard focus, as seen by the frontmost app. With a `timeout`, each
+    /// question to that app gives up after it.
+    static func focusedWindow(timeout: Float? = nil) -> (AXUIElement, WindowID)? {
+        func window(of app: AXUIElement) -> (AXUIElement, WindowID)? {
+            if let timeout { AXUIElementSetMessagingTimeout(app, timeout) }
+            guard let w = app.element(kAXFocusedWindowAttribute) else { return nil }
+            if let timeout { AXUIElementSetMessagingTimeout(w, timeout) }
+            return w.windowID.map { (w, $0) }
+        }
         // The system-wide element is updated as soon as focus moves; NSWorkspace's frontmost app can lag.
-        if let app = AXUIElementCreateSystemWide().element(kAXFocusedApplicationAttribute),
-           let w = app.element(kAXFocusedWindowAttribute), let id = w.windowID {
-            return (w, id)
+        if let app = AXUIElementCreateSystemWide().element(kAXFocusedApplicationAttribute), let found = window(of: app) {
+            return found
         }
         guard let app = NSWorkspace.shared.frontmostApplication else { return nil }
-        let axApp = AXUIElementCreateApplication(app.processIdentifier)
-        guard let w = axApp.element(kAXFocusedWindowAttribute), let id = w.windowID else { return nil }
-        return (w, id)
+        return window(of: AXUIElementCreateApplication(app.processIdentifier))
     }
 }
 

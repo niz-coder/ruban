@@ -106,7 +106,7 @@ your keyboard layout, so on AZERTY ⌃⌥Q is the key printed Q.
 | ⌃⌥ T | Float / tile the focused window |
 | ⌃⌥ P / ⌃⌥⇧ P | Pin to the left / right edge |
 | ⌃⌥ N | Send to the next display |
-| ⌃⌥ Q | Pause Ruban (every window comes back on screen) |
+| ⌃⌥ Q | Pause Ruban: every window comes back on screen, and ⌃⌥ Q again puts each one back in its place |
 
 On the trackpad: three-finger horizontal swipe, or ⌃⌥ + two-finger scroll (also works with a mouse wheel).
 
@@ -129,6 +129,11 @@ Every action above has a name: `focus-left`, `move-right`, `cycle-width`, `full-
   tap for modifier + scroll, the trackpad reader, and the SwiftUI settings.
 - Windows that scroll off screen are **parked** at the screen edge with a 1-point sliver visible:
   macOS pulls back a window placed entirely off screen to 40 points, but leaves a 1-point one alone.
+  When another display touches that edge, the window goes to the far edge or down to a bottom
+  corner instead, so it never hangs over the other display.
+- Quitting or pausing brings the parked windows back on screen. A crash or a force quit cannot run
+  any code, so Ruban starts a small guardian at launch (`Ruban --guard <pid>`, the same binary): when
+  Ruban ends without having brought its windows back, the guardian does it, then exits.
 - Scrolling is locked to the display's refresh rate, and a critically damped spring takes over from
   your fingers when you let go.
 - The work that waits on other processes over and over stays off the main thread: window scans,
@@ -146,7 +151,9 @@ missing one degrades gracefully instead of crashing:
 - SkyLight (`_SLPSSetFrontProcessWithOptions`, `SLPSPostEventRecordTo`, `SLSManagedDisplayGetCurrentSpace`),
   to focus one specific window and to tell Spaces apart;
 - MultitouchSupport, to read raw trackpad contacts, since macOS consumes multi-finger swipes
-  before any app sees them.
+  before any app sees them;
+- `responsibility_spawnattrs_setdisclaim`, so the guardian answers for its own Accessibility
+  permission once Ruban, which started it, is gone.
 
 No SIP changes and no code injection are needed, but a macOS update can break any of these. This
 also means Ruban cannot ship on the Mac App Store.

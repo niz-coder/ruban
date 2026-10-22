@@ -1,5 +1,11 @@
 import AppKit
 
+// The guardian that brings the windows back if Ruban dies (see Guardian): no app, no UI.
+if let i = CommandLine.arguments.firstIndex(of: "--guard"), CommandLine.arguments.count > i + 1,
+   let pid = pid_t(CommandLine.arguments[i + 1]) {
+    Guardian.run(watching: pid)
+}
+
 let app = NSApplication.shared
 
 if let i = CommandLine.arguments.firstIndex(of: "--snapshot"), CommandLine.arguments.count > i + 1 {
@@ -16,7 +22,8 @@ for sig in [SIGTERM, SIGINT, SIGHUP] {
     signal(sig, SIG_IGN)
     let source = DispatchSource.makeSignalSource(signal: sig, queue: .main)
     source.setEventHandler {
-        WindowManager.shared.stop()
+        WindowManager.shared.stop(exiting: true)
+        Guardian.markCleanExit()
         exit(0)
     }
     source.resume()

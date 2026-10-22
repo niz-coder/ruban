@@ -26,4 +26,9 @@ enum Log {
             }
         }
     }
+
+    /// Waits until every line written so far is on disk, for a process about to exit.
+    static func flush() {
+        queue.sync {}
+    }
 }

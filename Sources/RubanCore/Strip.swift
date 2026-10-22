@@ -40,6 +40,19 @@ public struct Column: Equatable, Codable, Sendable {
     func isLive(_ present: Set<WindowID>) -> Bool {
         windows.contains(where: present.contains)
     }
+
+    /// The same column with only these windows, in the same order and with the same heights,
+    /// or nil when none of them is left.
+    public func keeping(_ ids: Set<WindowID>) -> Column? {
+        let keep = windows.indices.filter { ids.contains(windows[$0]) }
+        guard !keep.isEmpty else { return nil }
+        var c = self
+        c.windows = keep.map { windows[$0] }
+        c.weights = keep.map { weights[$0] }
+        c.active = activeWindow.flatMap { c.windows.firstIndex(of: $0) } ?? 0
+        c.tabbed = tabbed && c.windows.count > 1
+        return c
+    }
 }
 
 /// The endless horizontal strip of one display (and one Space).

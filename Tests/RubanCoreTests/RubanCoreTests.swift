@@ -85,6 +85,27 @@ final class StripTests: XCTestCase {
     }
 }
 
+extension StripTests {
+    func testKeepingOnlySomeWindowsOfAColumn() {
+        var s = strip([1, 2, 3])
+        s.focused = 1
+        _ = s.stackIntoNeighbor(-1, present: [1, 2, 3])
+        s.columns[0].weights = [2, 1]
+        s.columns[0].tabbed = true
+        let both = s.columns[0].keeping([1, 2, 9])!
+        XCTAssertEqual(both.windows, [1, 2])
+        XCTAssertEqual(both.weights, [2, 1])
+        XCTAssertEqual(both.activeWindow, 2)
+        XCTAssertTrue(both.tabbed)
+        XCTAssertEqual(both.id, s.columns[0].id)
+        let one = s.columns[0].keeping([1])!
+        XCTAssertEqual(one.windows, [1])
+        XCTAssertEqual(one.activeWindow, 1, "the active window is gone: the first one left takes over")
+        XCTAssertFalse(one.tabbed, "one window makes no tabs")
+        XCTAssertNil(s.columns[0].keeping([3]))
+    }
+}
+
 final class LayoutTests: XCTestCase {
     // A 1470 x 956 MacBook screen: 33 pt menu bar, 58 pt Dock.
     let params = LayoutParams(
@@ -179,6 +200,43 @@ final class LayoutTests: XCTestCase {
         XCTAssertEqual(Layout.park(right, region: region, screen: params.screen).minX, 1469)
         let partly = CGRect(x: 1200, y: 41, width: 700, height: 849)
         XCTAssertEqual(Layout.park(partly, region: region, screen: params.screen), partly)
+    }
+
+    func testParkingNeverHangsOverAnotherDisplay() {
+        let region = CGRect(x: 0, y: 33, width: 1470, height: 865)
+        let right = CGRect(x: 1600, y: 41, width: 700, height: 849)
+        let left = CGRect(x: -900, y: 41, width: 700, height: 849)
+        // A second display to the right: windows past the right edge go to the left edge instead.
+        let onRight = [CGRect(x: 1470, y: 0, width: 1920, height: 1080)]
+        XCTAssertEqual(Layout.park(right, region: region, screen: params.screen, others: onRight).minX, -699)
+        XCTAssertEqual(Layout.park(left, region: region, screen: params.screen, others: onRight).minX, -699)
+        // Displays on both sides: down to the bottom corner, one point left on this display.
+        let both = onRight + [CGRect(x: -1920, y: 0, width: 1920, height: 1080)]
+        let corner = Layout.park(right, region: region, screen: params.screen, others: both)
+        XCTAssertEqual(corner.minX, 1469)
+        XCTAssertEqual(corner.minY, 955)
+        XCTAssertEqual(corner.intersection(params.screen).width, 1)
+        // A display above leaves both sides free.
+        let above = [CGRect(x: 0, y: -1080, width: 1920, height: 1080)]
+        XCTAssertEqual(Layout.park(right, region: region, screen: params.screen, others: above).minX, 1469)
+    }
+
+    func testBringingBackCascadesParkedWindowsAndNudgesTheRest() {
+        let area = params.area
+        let shown = CGRect(x: 100, y: 41, width: 600, height: 849)
+        let half = CGRect(x: 1200, y: 41, width: 700, height: 849)
+        let parkedRight = CGRect(x: 1469, y: 41, width: 1454, height: 849)
+        let parkedLeft = CGRect(x: -699, y: 41, width: 700, height: 849)
+        let corner = CGRect(x: 1469, y: 955, width: 700, height: 849)
+        let out = Layout.bringBack([shown, half, parkedRight, parkedLeft, corner], area: area)
+        XCTAssertEqual(out[0], shown, "a window on screen stays where it is")
+        XCTAssertEqual(out[1].maxX, area.maxX, "a window half off screen slides back in")
+        XCTAssertEqual(out[1].size, half.size)
+        for f in out { XCTAssertTrue(area.contains(f), "\(f) is inside the usable area") }
+        XCTAssertEqual(out[2].width, (area.width * 0.7).rounded(), "a full-width window comes back narrower")
+        XCTAssertEqual(out[3].minX - out[2].minX, 28)
+        XCTAssertEqual(out[3].minY - out[2].minY, 28)
+        XCTAssertEqual(out[4].minY - out[3].minY, 28, "a window parked in a corner comes back too")
     }
 
     func testSnapPicksNearestColumn() {

@@ -54,7 +54,11 @@ final class TrackpadSwipe {
         self.fingers = fingers
         trackers.removeAll()
         lock.unlock()
-        guard fingers > 0, let api = API.shared, let list = api.createList()?.takeRetainedValue() else { return }
+        guard fingers > 0 else { return }
+        guard let api = API.shared, let list = api.createList()?.takeRetainedValue() else {
+            Log.write("trackpad: MultitouchSupport is missing, swiping is off")
+            return
+        }
         devices = list
         for i in 0..<CFArrayGetCount(list) {
             guard let raw = CFArrayGetValueAtIndex(list, i) else { continue }

@@ -192,6 +192,8 @@ final class Hotkeys {
 
     /// Every registered shortcut, for the settings window: (action, display string).
     private(set) var registered: [(Action, String)] = []
+    /// Shortcuts that could not be registered, and why, for the settings window.
+    private(set) var unavailable: [(action: Action, keys: String, reason: String)] = []
 
     func register(_ preset: ModifierPreset) {
         unregisterAll()
@@ -200,34 +202,44 @@ final class Hotkeys {
         var taken = Set<UInt64>()
         var nextID: UInt32 = 1
         for b in Shortcut.defaults {
+            var text = preset.symbol
+            if b.command && preset != .controlOptionCommand { text += "⌘" }
+            if b.shift { text += "⇧" }
             let code: Int
             switch b.key {
             case .code(let c): code = c
             case .char(let ch):
-                guard let c = chars[ch] else { continue }
+                guard let c = chars[ch] else {
+                    unavailable.append((b.action, text + " " + ch.uppercased(), "Cette touche n'existe pas sur ta disposition de clavier."))
+                    continue
+                }
                 code = c
             }
+            text += " " + KeyboardLayout.label(for: code)
             var mods = preset.carbon
             if b.shift { mods |= UInt32(shiftKey) }
             if b.command { mods |= UInt32(cmdKey) }
             let k = UInt64(code) << 32 | UInt64(mods)
-            guard !taken.contains(k) else { continue }
+            guard !taken.contains(k) else {
+                unavailable.append((b.action, text, "Même combinaison qu'un autre raccourci avec \(preset.symbol)."))
+                continue
+            }
             taken.insert(k)
 
             var ref: EventHotKeyRef?
             let id = EventHotKeyID(signature: OSType(0x5242_414E), id: nextID) // 'RBAN'
-            if RegisterEventHotKey(UInt32(code), mods, id, GetApplicationEventTarget(), 0, &ref) == noErr, let ref {
+            let status = RegisterEventHotKey(UInt32(code), mods, id, GetApplicationEventTarget(), 0, &ref)
+            if status == noErr, let ref {
                 refs.append(ref)
                 actions[nextID] = b.action
-                var text = preset.symbol
-                if b.command && preset != .controlOptionCommand { text += "⌘" }
-                if b.shift { text += "⇧" }
-                text += " " + KeyboardLayout.label(for: code)
                 registered.append((b.action, text))
+            } else {
+                unavailable.append((b.action, text, "macOS a refusé de l'enregistrer."))
             }
             nextID += 1
         }
-        Log.write("hotkeys: \(refs.count) registered with \(preset.symbol)")
+        Log.write("hotkeys: \(refs.count) registered with \(preset.symbol)"
+                  + unavailable.map { ", \($0.action.rawValue) \($0.keys) unavailable" }.joined())
     }
 
     func unregisterAll() {
@@ -235,6 +247,7 @@ final class Hotkeys {
         refs.removeAll()
         actions.removeAll()
         registered.removeAll()
+        unavailable.removeAll()
     }
 
     fileprivate func fire(_ id: UInt32) {

@@ -204,15 +204,60 @@ public enum Layout {
     }
 
     /// Moves a window that ends up outside the scrolling region to the screen edge, with a sliver visible.
-    public static func park(_ r: CGRect, region: CGRect, screen: CGRect) -> CGRect {
+    ///
+    /// `others` are the frames of the other displays. A window parked against an edge that another
+    /// display touches would hang over that display, so it goes to the far edge instead, or down to
+    /// a bottom corner where only one point of it stays on this display.
+    public static func park(_ r: CGRect, region: CGRect, screen: CGRect, others: [CGRect] = []) -> CGRect {
         let visible = r.intersection(region)
         if !visible.isNull, visible.width >= 1 { return r }
-        var out = r
-        if r.midX < region.midX {
-            out.origin.x = screen.minX - r.width + parkSliver
-        } else {
-            out.origin.x = screen.maxX - parkSliver
+        var left = r, right = r
+        left.origin.x = screen.minX - r.width + parkSliver
+        right.origin.x = screen.maxX - parkSliver
+        let near = r.midX < region.midX ? [left, right] : [right, left]
+        guard !others.isEmpty else { return near[0] }
+        let corners = near.map { side -> CGRect in
+            var c = side
+            c.origin.y = screen.maxY - parkSliver
+            return c
         }
-        return out
+        let candidates = near + corners
+        func overlap(_ c: CGRect) -> Double {
+            others.reduce(0) { sum, o in
+                let i = c.intersection(o)
+                return i.isNull ? sum : sum + i.width * i.height
+            }
+        }
+        // Displays on every side: hang over them as little as possible.
+        return candidates.first { overlap($0) == 0 } ?? candidates.min { overlap($0) < overlap($1) }!
+    }
+
+    /// Frames that bring windows back on screen when tiling stops, in the order given.
+    ///
+    /// A window that shows enough of itself is only nudged inside `area`, keeping its size if it fits.
+    /// A parked one (a sliver at an edge or a corner) comes back near the middle, no wider than 70 %
+    /// of the area and short enough for the cascade, and each one lands a step down and right of
+    /// the last so every title bar stays in reach.
+    public static func bringBack(_ frames: [CGRect], area: CGRect) -> [CGRect] {
+        let step = 28.0, steps = 6
+        let maxWidth = (area.width * 0.7).rounded()
+        let maxHeight = area.height - Double(steps - 1) * step
+        let left = (area.midX - maxWidth / 2 - Double(steps - 1) * step / 2).rounded()
+        var parked = 0
+        return frames.map { f in
+            var out = f
+            let shown = f.intersection(area)
+            if shown.isNull || shown.width < 40 || shown.height < 40 {
+                let k = Double(parked % steps)
+                parked += 1
+                out = CGRect(x: left + k * step, y: area.minY + k * step,
+                             width: min(f.width, maxWidth), height: min(f.height, maxHeight))
+            }
+            out.size.width = min(out.width, area.width)
+            out.size.height = min(out.height, area.height)
+            out.origin.x = min(max(out.minX, area.minX), area.maxX - out.width)
+            out.origin.y = min(max(out.minY, area.minY), area.maxY - out.height)
+            return out
+        }
     }
 }

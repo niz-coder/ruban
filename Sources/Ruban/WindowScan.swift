@@ -27,6 +27,8 @@ struct WindowScan {
         let rejected: [WindowID: CFTimeInterval]
         let userFloating: Set<WindowID>
         let floatApps: Set<String>
+        /// The window manager's focus counter when the scan began.
+        let focusChanges: Int
     }
 
     /// Windows judged not tileable (dialogs, panels, full-screen windows) are judged again after
@@ -51,6 +53,8 @@ struct WindowScan {
     var minimized = Set<WindowID>()
     var hiddenPIDs = Set<pid_t>()
     var livePIDs = Set<pid_t>()
+    /// The window with keyboard focus once the scan was done.
+    var focused: WindowID?
 
     /// Off the main thread only: every call in here may wait on another process.
     static func run(_ input: Input) -> WindowScan {
@@ -112,6 +116,7 @@ struct WindowScan {
             guard let frame = entry.element.frame else { continue }
             scan.fresh[id] = (frame, entry.element.title)
         }
+        scan.focused = AX.focusedWindow()?.1
         return scan
     }
 

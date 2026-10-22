@@ -13,6 +13,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSAppleEventManager.shared().setEventHandler(self, andSelector: #selector(handleURL(_:reply:)),
                                                      forEventClass: AEEventClass(kInternetEventClass), andEventID: AEEventID(kAEGetURL))
         AXUIElementSetMessagingTimeout(AXUIElementCreateSystemWide(), 0.4)
+        Guardian.spawn()
         setupStatusItem()
 
         Hotkeys.shared.onAction = { [weak self] action in
@@ -49,7 +50,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        wm.stop()
+        wm.stop(exiting: true)
+        Guardian.markCleanExit()
     }
 
     private func startTiling() {
@@ -85,26 +87,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let img = NSImage(systemSymbolName: name, accessibilityDescription: "Ruban")
         img?.isTemplate = true
         statusItem.button?.image = img
-        statusItem.button?.appearsDisabled = !running
+        statusItem.button?.appearsDisabled = !running || wm.trustLost
         AppState.shared.refresh()
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
         let m = settings.modifiers.symbol
-        let header = NSMenuItem(title: wm.running ? "Ruban est actif" : (AX.isTrusted() ? "Ruban est en pause" : "Ruban attend l'autorisation Accessibilité"),
-                                action: nil, keyEquivalent: "")
-        header.isEnabled = false
-        menu.addItem(header)
-        if wm.running {
+        let trusted = AX.isTrusted()
+        let state = !trusted
+            ? (wm.running ? "Ruban a perdu l'autorisation Accessibilité" : "Ruban attend l'autorisation Accessibilité")
+            : (wm.running ? "Ruban est actif" : "Ruban est en pause")
+        menu.addItem(note(state))
+        if wm.running && !trusted {
+            menu.addItem(note("Les fenêtres garées reviendront dès qu'elle sera rendue."))
+        } else if wm.running {
             let count = wm.present.count
-            let info = NSMenuItem(title: "\(count) fenêtre\(count > 1 ? "s" : "") sur la bande", action: nil, keyEquivalent: "")
-            info.isEnabled = false
-            menu.addItem(info)
+            menu.addItem(note("\(count) fenêtre\(count > 1 ? "s" : "") sur la bande"))
+        }
+        if wm.running && wm.swipeConflict && settings.swipeFingers > 0 {
+            let it = item("Balayage à \(settings.swipeFingers) doigts laissé à macOS…", #selector(showGestureSettings))
+            it.image = NSImage(systemSymbolName: "exclamationmark.triangle", accessibilityDescription: "Attention")
+            menu.addItem(it)
         }
         menu.addItem(.separator())
 
-        if !AX.isTrusted() {
+        if !trusted {
             menu.addItem(item("Autoriser l'accessibilité…", #selector(openAccessibility)))
         } else {
             menu.addItem(item(wm.running ? "Mettre en pause  (\(m)Q)" : "Activer  (\(m)Q)", #selector(toggleRunning)))
@@ -127,6 +135,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(.separator())
         menu.addItem(item("Réglages…", #selector(showSettings), key: ","))
         menu.addItem(item("Quitter Ruban", #selector(quit), key: "q"))
+    }
+
+    private func note(_ title: String) -> NSMenuItem {
+        let it = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        it.isEnabled = false
+        return it
     }
 
     private func item(_ title: String, _ action: Selector, key: String = "") -> NSMenuItem {
@@ -154,6 +168,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc func showSettings() {
+        openSettings(tab: nil)
+    }
+
+    /// The trackpad settings, where the gesture conflict is explained with a way to fix it.
+    @objc func showGestureSettings() {
+        openSettings(tab: 2)
+    }
+
+    func openSettings(tab: Int?) {
+        if let tab { SettingsNavigation.shared.tab = tab }
         if settingsWindow == nil {
             let w = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 620, height: 600),
                              styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
@@ -180,7 +204,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case "start": if !wm.running { toggleRunning() }
         case "stop": if wm.running { toggleRunning() }
         default:
-            if let action = Action(rawValue: name) { wm.perform(action) }
+            if let action = Action(rawValue: name) {
+                wm.perform(action)
+            } else {
+                Log.write("url: no action named \"\(name)\" (\(s))")
+            }
         }
         refreshStatus()
     }

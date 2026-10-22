@@ -1,6 +1,13 @@
 #!/bin/sh
 # Pilote Ruban depuis le terminal, Raccourcis ou Raycast.
 #   ruban focus-right | move-left | cycle-width | full-width | centre | toggle | settings …
+actions="focus-left focus-right focus-up focus-down focus-first focus-last
+jump-1 jump-2 jump-3 jump-4 jump-5 jump-6 jump-7 jump-8 jump-9
+move-left move-right move-up move-down send-to-next-display
+cycle-width full-width centre wider narrower taller shorter equalize-heights
+pin-left pin-right stack-left stack-right pop-left pop-right toggle-tabbed toggle-float
+toggle start stop settings"
+
 if [ -z "$1" ] || [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
   cat <<'EOF'
 usage: ruban <action>
@@ -13,4 +20,11 @@ usage: ruban <action>
 EOF
   exit 0
 fi
-exec open -g "ruban://$1"
+
+for a in $actions; do
+  if [ "$a" = "$1" ]; then
+    exec open -g "ruban://$1"
+  fi
+done
+echo "ruban: unknown action '$1' (ruban --help lists them)" >&2
+exit 2

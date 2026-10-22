@@ -57,6 +57,13 @@ final class WindowManager {
     private var ignoreMovesUntil: CFTimeInterval = 0
     private var dragTimer: Timer?
     private var bootstrapped = false
+    /// The window with keyboard focus as last seen, from the AX notifications, the scans and Ruban's
+    /// own focus moves. Reading it asks no app anything, so a hung app cannot stall a key press.
+    private var focusedID: WindowID?
+    /// Counts focus updates, so a scan begun before one does not undo it with what it saw.
+    private var focusChanges = 0
+    /// The strips as they were when Ruban was paused, rebuilt window for window when it starts again.
+    private var heldLayout: [String: Strip]?
     private var pendingFocus: (id: WindowID, until: CFTimeInterval)?
     private var stubbornCheck: DispatchWorkItem?
     private var sizeRetried = Set<WindowID>()
@@ -107,6 +114,7 @@ final class WindowManager {
         needsFullScan = true
         generation += 1
         rejected.removeAll()
+        trustLost = false
         pauseReasons = LoginSession.isLocked ? ["screen locked"] : []
         Log.write(paused ? "start, paused while the screen is locked" : "start")
         installWorkspaceObservers()
@@ -117,14 +125,18 @@ final class WindowManager {
     }
 
     /// Stops tiling. Parked windows come back on screen so nothing is left hidden at the edge.
-    func stop() {
+    /// A pause (`exiting` false) remembers the strips, so starting again puts every window back
+    /// exactly where it was; before Ruban exits, the main thread waits for the apps to move them.
+    func stop(exiting: Bool = false) {
         guard running else { return }
-        Log.write("stop")
+        Log.write(exiting ? "stop, exiting" : "stop")
+        if saveWork != nil { save(titles: []) }
         animator.cancelAll()
         springs.removeAll()
         dirtyStrips.removeAll()
         clock.stop()
-        bringEverythingBack()
+        bringEverythingBack(wait: exiting)
+        heldLayout = exiting ? nil : strips
         running = false
         generation += 1
         scanAgain = false
@@ -157,23 +169,27 @@ final class WindowManager {
         NotificationCenter.default.post(name: .rubanStateChanged, object: nil)
     }
 
-    private func bringEverythingBack() {
+    /// Brings every window back on screen, strip by strip: parked ones cascade near the middle of
+    /// their display in strip order, and windows half off screen slide in.
+    private func bringEverythingBack(wait: Bool) {
         var pids = Set<pid_t>()
-        for (id, w) in windows {
-            guard let key = stripKeyOf[id], let d = displays.first(where: { $0.key == key }),
-                  let frame = applied[id] else { continue }
-            let area = d.params.area
-            var f = frame
-            if f.maxX <= area.minX + 2 || f.minX >= area.maxX - 2 {
-                f.size.width = min(f.width, area.width * 0.7)
-                f.origin.x = area.midX - f.width / 2 + CGFloat(Int(id % 5) * 24 - 48)
+        for (key, strip) in strips {
+            // A strip of another Space comes back on the same display.
+            let uuid = key.split(separator: "#").first.map(String.init) ?? key
+            guard let d = displays.first(where: { $0.key == key }) ?? displays.first(where: { $0.key.hasPrefix(uuid + "#") })
+            else { continue }
+            let ids = strip.columns.flatMap(\.windows).filter { windows[$0] != nil && applied[$0] != nil }
+            let frames = Layout.bringBack(ids.map { applied[$0]! }, area: d.params.area)
+            for (id, f) in zip(ids, frames) {
+                guard let w = windows[id], let old = applied[id], f != old else { continue }
+                // Through the same per-app queue, so no move still in flight can park it again afterwards.
+                AXWorker.shared.setFrame(w.element, window: id, pid: w.pid, frame: f, resize: f.size != old.size)
+                applied[id] = f
+                pids.insert(w.pid)
             }
-            f.origin.x = min(max(f.minX, area.minX), area.maxX - f.width)
-            // Through the same per-app queue, so no move still in flight can park it again afterwards.
-            AXWorker.shared.setFrame(w.element, window: id, pid: w.pid, frame: f, resize: f.width != frame.width)
-            pids.insert(w.pid)
         }
-        // We may be about to exit: wait (briefly) until every app has taken its last frame.
+        guard wait else { return }
+        // We are about to exit: wait (briefly) until every app has taken its last frame.
         let group = DispatchGroup()
         for pid in pids {
             group.enter()
@@ -254,6 +270,7 @@ final class WindowManager {
     }
 
     private func heartbeatTick() {
+        checkTrust()
         guard paused else { return reconcile() }
         // A notification that never came must not leave Ruban paused for good: someone using the
         // Mac on an unlocked screen means every reason to pause is over. Asking is a question to
@@ -271,6 +288,21 @@ final class WindowManager {
                 self.resumed()
             }
         }
+    }
+
+    /// True while the Accessibility permission is off. Nothing can move then, not even the parked
+    /// windows back on screen; Ruban says so and picks up again once the permission is back.
+    private(set) var trustLost = false
+
+    /// macOS sends nothing when the Accessibility permission is switched off or on again: look.
+    private func checkTrust() {
+        let trusted = AX.isTrusted()
+        guard trusted == trustLost else { return } // no change since the last look
+        trustLost = !trusted
+        Log.write(trusted ? "the Accessibility permission is back" : "the Accessibility permission was switched off")
+        if trusted { needsFullScan = true }
+        ScrollTap.shared.refresh()
+        NotificationCenter.default.post(name: .rubanStateChanged, object: nil)
     }
 
     // MARK: Displays
@@ -305,7 +337,7 @@ final class WindowManager {
 
     /// The strip the user is working in: the one holding the focused window, else the one under the mouse.
     func activeKey() -> String? {
-        if let (_, id) = AX.focusedWindow(), let key = stripKeyOf[id], displays.contains(where: { $0.key == key }) { return key }
+        if let id = focusedID, let key = stripKeyOf[id], displays.contains(where: { $0.key == key }) { return key }
         return display(containing: mouseLocationAX)?.key
     }
 
@@ -338,7 +370,8 @@ final class WindowManager {
             tracked: windows.mapValues { (element: $0.element, pid: $0.pid) },
             rejected: rejected,
             userFloating: userFloating,
-            floatApps: Set(settings.floatApps))
+            floatApps: Set(settings.floatApps),
+            focusChanges: focusChanges)
         needsFullScan = false
         scanQueue.async { [weak self] in
             let scan = WindowScan.run(input)
@@ -464,7 +497,8 @@ final class WindowManager {
 
         if changed {
             Log.write("reconcile: \(present.count) present, strips " + strips.map { "\($0.key.suffix(8)): \($0.value.columns.map { $0.windows })" }.joined(separator: " | "))
-            syncFocus(layout: false)
+            // The scan saw the focus off the main thread; unless it has moved since the scan began.
+            if focusChanges == scan.input.focusChanges { adoptFocus(scan.focused, layout: false) }
             layoutAll(animated: bootstrapped)
             saveSession()
         }
@@ -490,14 +524,25 @@ final class WindowManager {
                 let raw = Layout.fraction(forWidth: f.width, inner: inner, gap: d.params.gap)
                 return (settings.presets + [1]).min { abs($0 - raw) < abs($1 - raw) } ?? settings.defaultWidth
             }
-            let columns = settings.restoreSession
-                ? session.restore(list, key: key, defaultWidth: widthOf)
-                : list.map { Column(window: $0.id, width: widthOf($0.id)) }
+            // Back from a pause: the windows still open take their old places, window for window.
+            let held = heldLayout?[key]
+            let ids = Set(list.map(\.id))
+            let kept = held?.columns.compactMap { $0.keeping(ids) } ?? []
+            let rest = list.filter { w in !kept.contains { $0.windows.contains(w.id) } }
+            let columns = kept + (settings.restoreSession
+                ? session.restore(rest, key: key, defaultWidth: widthOf)
+                : rest.map { Column(window: $0.id, width: widthOf($0.id)) })
             var strip = strips[key] ?? Strip()
+            if strip.columns.isEmpty, let held, !kept.isEmpty {
+                let heldFocus = held.columns.indices.contains(held.focused) ? held.columns[held.focused].id : nil
+                strip.focused = kept.firstIndex { $0.id == heldFocus } ?? 0
+                strip.scroll = held.scroll
+            }
             strip.columns += columns
             strips[key] = strip
             for c in columns { for id in c.windows { stripKeyOf[id] = key } }
         }
+        heldLayout = nil
     }
 
     private func track(_ w: TrackedWindow) {
@@ -531,13 +576,17 @@ final class WindowManager {
     // MARK: Focus
 
     /// Follows the system focus: when you click a window or switch apps, the strip scrolls to it.
-    /// `reported` is the window an AX notification named, when it named one.
+    /// `reported` is the window an AX notification named, when it named one; otherwise the focused
+    /// app is asked, briefly.
     func syncFocus(layout: Bool = true, reported: WindowID? = nil) {
         guard running else { return }
-        guard let id = reported ?? AX.focusedWindow()?.1 else {
-            updateBorder()
-            return
-        }
+        adoptFocus(reported ?? AX.focusedWindow(timeout: AX.quickTimeout)?.1, layout: layout)
+    }
+
+    /// Takes `id` as the window with keyboard focus (nil: none, or its app did not answer in time).
+    private func adoptFocus(_ id: WindowID?, layout: Bool) {
+        guard running else { return }
+        focusChanges += 1
         // Right after we move focus, macOS can still report the previous window for a moment.
         // Ignore those stale reports instead of jumping back.
         if let p = pendingFocus {
@@ -549,7 +598,8 @@ final class WindowManager {
             }
             pendingFocus = nil
         }
-        guard let key = stripKeyOf[id], var strip = strips[key],
+        focusedID = id
+        guard let id, let key = stripKeyOf[id], var strip = strips[key],
               let ci = strip.columnIndex(of: id), let wi = strip.columns[ci].windows.firstIndex(of: id) else {
             updateBorder()
             return
@@ -567,11 +617,16 @@ final class WindowManager {
         // gesture of its own. Only windows on screen here get focus.
         guard let w = windows[id], present.contains(id), WindowList.isOnScreen(id) else { return }
         pendingFocus = (id, CACurrentMediaTime() + 0.6)
+        focusedID = id
         if !SkyLight.focus(pid: w.pid, window: id) {
             NSRunningApplication(processIdentifier: w.pid)?.activate()
         }
-        w.element.set(kAXMainAttribute, kCFBooleanTrue)
-        w.element.raise()
+        // These two are questions to the app: on its own queue, after the moves already sent to it.
+        let element = w.element
+        AXWorker.shared.afterPending(w.pid) {
+            element.set(kAXMainAttribute, kCFBooleanTrue)
+            element.raise()
+        }
     }
 
     func focusColumn(_ column: Int, in key: String) {
@@ -624,6 +679,7 @@ final class WindowManager {
         pinnedWindows.subtract(strip.columns.flatMap(\.windows))
         for i in g.pinned.keys { pinnedWindows.formUnion(strip.columns[i].windows) }
         screenOf[key] = d.params.screen
+        otherScreens[key] = displays.filter { $0.key != key }.map(\.params.screen)
     }
 
     /// Puts every window of a strip where its current scroll offset says, with no animation.
@@ -640,6 +696,8 @@ final class WindowManager {
 
     private var regions: [String: CGRect] = [:]
     private var screenOf: [String: CGRect] = [:]
+    /// The other displays, which a window parked at this strip's edge must not hang over.
+    private var otherScreens: [String: [CGRect]] = [:]
     private var pinnedWindows: Set<WindowID> = []
 
     /// Puts one window at a point of its strip, parking it at the screen edge if that point is off screen.
@@ -648,7 +706,7 @@ final class WindowManager {
         virtual[id] = frame
         var target = frame
         if !pinnedWindows.contains(id), let region = regions[key], let screen = screenOf[key] {
-            target = Layout.park(frame, region: region, screen: screen)
+            target = Layout.park(frame, region: region, screen: screen, others: otherScreens[key] ?? [])
         }
         let last = applied[id]
         if let last, last.isClose(to: target, tolerance: 0.5) { return }
@@ -723,11 +781,13 @@ final class WindowManager {
     /// In a column shown as tabs (asked for, or a stack too tall for the screen), the active window
     /// goes in front of the others.
     private func raiseTabbedActive(_ strip: Strip, height: Double) {
-        guard strip.columns.indices.contains(strip.focused), let id = strip.focusedWindow else { return }
+        guard strip.columns.indices.contains(strip.focused), let id = strip.focusedWindow, let w = windows[id] else { return }
         let c = strip.columns[strip.focused]
         guard c.windows.filter(present.contains).count > 1,
               !Layout.showsStacked(c, present: present, minHeights: minHeights, height: height, gap: settings.gap) else { return }
-        windows[id]?.element.raise()
+        // A question to the app: on its own queue, after the moves already sent to it.
+        let element = w.element
+        AXWorker.shared.afterPending(w.pid) { element.raise() }
     }
 
     /// Strip columns currently shown as tabs, for the indicator.
@@ -739,7 +799,7 @@ final class WindowManager {
     }
 
     func updateBorder() {
-        guard running, settings.focusBorder, let (_, id) = AX.focusedWindow(), present.contains(id),
+        guard running, settings.focusBorder, let id = focusedID, present.contains(id),
               let frame = applied[id] else {
             border.hide()
             return
@@ -757,6 +817,7 @@ final class WindowManager {
         guard running else { return }
         springs.removeAll()
         focusWhenSettled.removeAll()
+        // One brief question to the focused app per key press, at most.
         syncFocus(layout: false)
         guard let key = activeKey(), var strip = strips[key] else {
             Log.write("action \(action.rawValue): no strip")
@@ -835,22 +896,23 @@ final class WindowManager {
     }
 
     private func toggleFloat() {
-        guard let (el, id) = AX.focusedWindow() else { return }
+        guard let id = focusedID else { return }
         if userFloating.contains(id) {
             userFloating.remove(id)
             rejected[id] = nil
             reconcile()
             return
         }
-        guard let key = stripKeyOf[id], let d = displays.first(where: { $0.key == key }) else { return }
+        guard let w = windows[id], let key = stripKeyOf[id], let d = displays.first(where: { $0.key == key }) else { return }
         userFloating.insert(id)
         drop(id)
         present.remove(id)
         // Float it in the middle of the screen, a little smaller, on top of the strip.
         let a = d.params.area
         let f = CGRect(x: a.midX - a.width * 0.3, y: a.minY + a.height * 0.12, width: a.width * 0.6, height: a.height * 0.76)
-        el.setFrame(f.integral, resize: true)
-        el.raise()
+        let element = w.element
+        AXWorker.shared.setFrame(element, window: id, pid: w.pid, frame: f.integral, resize: true)
+        AXWorker.shared.afterPending(w.pid) { element.raise() }
         layout(key, animated: true)
         updateBorder()
     }
@@ -1017,25 +1079,11 @@ final class WindowManager {
         return true
     }
 
+    /// Opens the trackpad settings, which explain the conflict and how to end it. Not a modal alert:
+    /// this comes in the middle of a gesture, and nothing here needs an answer before going on.
+    /// The menu keeps saying it for as long as the conflict lasts.
     private func explainSwipeConflict() {
-        let n = settings.swipeFingers
-        let alert = NSAlert()
-        alert.messageText = "macOS utilise aussi le glissé à \(n) doigts"
-        alert.informativeText = """
-            Quand macOS et Ruban réagissent au même geste, macOS peut changer de bureau en plein milieu, \
-            au point de laisser l'écran noir. En attendant, Ruban lui laisse ce geste.
-
-            \(MacSetup.swipeConflict(fingers: n) ?? "")
-
-            Ruban reprendra le glissé tout seul dès que le réglage sera changé.
-            """
-        alert.addButton(withTitle: "Ouvrir les réglages du trackpad")
-        alert.addButton(withTitle: "Plus tard")
-        NSApp.activate()
-        if alert.runModal() == .alertFirstButtonReturn,
-           let url = URL(string: "x-apple.systempreferences:com.apple.Trackpad-Settings.extension") {
-            NSWorkspace.shared.open(url)
-        }
+        (NSApp.delegate as? AppDelegate)?.showGestureSettings()
     }
 
     /// A window moved or resized while the mouse is down: the user is dragging it. Follow the drag,
@@ -1094,7 +1142,8 @@ final class WindowManager {
     }
 
     private func finishDrag(_ id: WindowID) {
-        guard let w = windows[id], let frame = w.element.frame, let old = applied[id],
+        // Where the window server shows it: asking the app could keep the main thread waiting.
+        guard windows[id] != nil, let frame = WindowList.bounds(of: id), let old = applied[id],
               let key = stripKeyOf[id], var strip = strips[key], let d = displays.first(where: { $0.key == key }),
               let ci = strip.columnIndex(of: id) else { return }
 
@@ -1154,6 +1203,8 @@ final class WindowManager {
 
     func handle(_ notification: String, _ element: AXUIElement) {
         guard running else { return }
+        // Its window number may be a question to the app: never wait long for it here.
+        AXUIElementSetMessagingTimeout(element, AX.quickTimeout)
         switch notification {
         case kAXWindowCreatedNotification:
             // New windows often appear on screen a beat after they are created: look again shortly.

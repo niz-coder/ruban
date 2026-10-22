@@ -9,28 +9,47 @@ final class AppState: ObservableObject {
     @Published var running = false
     @Published var trusted = AX.isTrusted()
     @Published var launchAtLogin = SMAppService.mainApp.status == .enabled
+    /// Why opening at login did not take, when macOS refused it or waits for the user's approval.
+    @Published var loginProblem: String?
 
     func refresh() {
         running = WindowManager.shared.running
         trusted = AX.isTrusted()
         launchAtLogin = SMAppService.mainApp.status == .enabled
+        if SMAppService.mainApp.status == .requiresApproval { loginProblem = Self.awaitingApproval }
     }
 
+    private static let awaitingApproval = "macOS attend ton accord pour ouvrir Ruban au démarrage."
+
     func setLaunchAtLogin(_ on: Bool) {
+        loginProblem = nil
         do {
             if on { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
         } catch {
-            NSLog("Ruban: launch at login: \(error)")
+            Log.write("launch at login: \(error)")
+            loginProblem = "macOS a refusé : \(error.localizedDescription)"
         }
-        launchAtLogin = SMAppService.mainApp.status == .enabled
+        let status = SMAppService.mainApp.status
+        launchAtLogin = status == .enabled
+        if on, status == .requiresApproval { loginProblem = Self.awaitingApproval }
     }
 }
 
+/// Which settings tab shows. It outlives the window, so the settings open where you left them.
+final class SettingsNavigation: ObservableObject {
+    static let shared = SettingsNavigation()
+    @Published var tab = 0
+}
+
 struct SettingsView: View {
-    @State var tab = 0
+    @ObservedObject var nav = SettingsNavigation.shared
+
+    init(tab: Int? = nil) {
+        if let tab { SettingsNavigation.shared.tab = tab }
+    }
 
     var body: some View {
-        TabView(selection: $tab) {
+        TabView(selection: $nav.tab) {
             GeneralTab().tabItem { Label("Général", systemImage: "gearshape") }.tag(0)
             LayoutTab().tabItem { Label("Disposition", systemImage: "rectangle.split.3x1") }.tag(1)
             ShortcutsTab().tabItem { Label("Raccourcis", systemImage: "keyboard") }.tag(2)
@@ -68,6 +87,11 @@ private struct GeneralTab: View {
                 Toggle("Ruban actif", isOn: runningBinding)
                     .disabled(!state.trusted)
                 Toggle("Ouvrir au démarrage du Mac", isOn: loginBinding)
+                if let problem = state.loginProblem {
+                    Problem(text: problem) {
+                        Button("Ouvrir les réglages") { SMAppService.openSystemSettingsLoginItems() }
+                    }
+                }
                 Toggle("Restaurer l'ordre des colonnes au lancement", isOn: $s.restoreSession)
             }
 
@@ -112,6 +136,31 @@ private struct PermissionRow: View {
     }
 }
 
+/// Something that did not work, said where it happened: the icon carries the colour, the text
+/// stays readable, and the way out sits beside it.
+private struct Problem<Action: View>: View {
+    let text: String
+    @ViewBuilder var action: () -> Action
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline) {
+            Label {
+                Text(text).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            } icon: {
+                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+            }
+            Spacer()
+            action()
+        }
+    }
+}
+
+extension Problem where Action == EmptyView {
+    init(text: String) {
+        self.init(text: text) { EmptyView() }
+    }
+}
+
 private struct Essential: View {
     let keys: String
     let text: String
@@ -146,6 +195,11 @@ private struct LayoutTab: View {
                     Text("Pleine").tag(1.0)
                 }
                 TextField("Largeurs prédéfinies (%)", text: $s.presetsText)
+                let ignored = s.ignoredPresets
+                if !ignored.isEmpty {
+                    Problem(text: "Ignoré : \(ignored.map { "« \($0) »" }.joined(separator: ", ")). Chaque largeur est un pourcentage entre 10 et 100."
+                        + (s.usesDefaultPresets ? " En attendant, \(s.modifiers.symbol) R parcourt 33, 50 et 66 %." : ""))
+                }
                 Text("Ce que parcourt \(s.modifiers.symbol) R, par exemple « 25, 33, 50, 66, 75 ».")
                     .font(.caption).foregroundStyle(.secondary)
                 Picker("Centrer la colonne active", selection: $s.centreMode) {
@@ -181,6 +235,7 @@ private struct LayoutTab: View {
 private struct ShortcutsTab: View {
     @ObservedObject var s = Settings.shared
     @State private var rows: [(Action, String)] = Hotkeys.shared.registered
+    @State private var unavailable = Hotkeys.shared.unavailable
 
     var body: some View {
         Form {
@@ -189,7 +244,7 @@ private struct ShortcutsTab: View {
                     ForEach(ModifierPreset.allCases) { p in Text(p.symbol).tag(p) }
                 }
                 .onChange(of: s.modifiers) { _, _ in
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { rows = Hotkeys.shared.registered }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { reload() }
                 }
             } footer: {
                 Text("⌥ seul reste à macOS (saut de mot, caractères comme ç ou ®). Les lettres suivent ta disposition de clavier : sur AZERTY, ⌃⌥Q est bien la touche Q.")
@@ -219,6 +274,16 @@ private struct ShortcutsTab: View {
                 Text("La bande suit tes doigts, puis se cale sur la colonne la plus proche. Un geste rapide file jusqu'à la colonne suivante.")
                     .font(.caption).foregroundStyle(.secondary)
             }
+            if !unavailable.isEmpty {
+                Section("Raccourcis indisponibles") {
+                    ForEach(Array(unavailable.enumerated()), id: \.offset) { _, u in
+                        HStack(alignment: .firstTextBaseline) {
+                            Problem(text: "\(u.action.label) — \(u.reason)")
+                            Text(u.keys).font(.system(.body, design: .rounded).monospaced()).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
             Section("Tous les raccourcis") {
                 ForEach(Array(grouped.enumerated()), id: \.offset) { _, row in
                     HStack {
@@ -230,7 +295,12 @@ private struct ShortcutsTab: View {
             }
         }
         .formStyle(.grouped)
-        .onAppear { rows = Hotkeys.shared.registered }
+        .onAppear { reload() }
+    }
+
+    private func reload() {
+        rows = Hotkeys.shared.registered
+        unavailable = Hotkeys.shared.unavailable
     }
 
     /// One line per action, all its key combinations side by side.

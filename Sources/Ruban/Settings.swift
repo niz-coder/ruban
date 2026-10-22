@@ -68,12 +68,24 @@ final class Settings: ObservableObject {
         onboarded = d.bool(forKey: "onboarded")
     }
 
+    private var presetTokens: [(text: String, percent: Double?)] {
+        presetsText.split(whereSeparator: { ",; ".contains($0) }).map { token in
+            let text = String(token)
+            let percent = Double(text.replacingOccurrences(of: "%", with: ""))
+            return (text, percent.flatMap { $0 >= 10 && $0 <= 100 ? $0 : nil })
+        }
+    }
+
+    /// What the presets field holds that is not a percentage between 10 and 100, and so is ignored.
+    var ignoredPresets: [String] { presetTokens.filter { $0.percent == nil }.map(\.text) }
+
+    /// Nothing usable in the presets field: thirds and a half stand in.
+    var usesDefaultPresets: Bool { presetTokens.allSatisfy { $0.percent == nil } }
+
     /// Width presets as fractions, parsed from "33, 50, 66" (percentages).
     var presets: [Double] {
-        let values = presetsText
-            .split(whereSeparator: { ",; ".contains($0) })
-            .compactMap { Double($0.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: "%", with: "")) }
-            .filter { $0 >= 10 && $0 <= 100 }
+        let values = presetTokens
+            .compactMap(\.percent)
             .map { $0 >= 99.5 ? 1 : $0 / 100 }
         let fixed = values.map { v -> Double in
             // 33 and 66 mean thirds.

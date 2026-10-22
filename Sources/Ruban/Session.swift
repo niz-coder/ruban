@@ -28,7 +28,11 @@ final class SessionStore {
     /// Records these strips, keeping the ones saved for other displays and Spaces, and writes them out.
     func save(_ strips: [String: [SavedColumn]]) {
         for (k, v) in strips { saved[k] = v }
-        if let data = try? JSONEncoder().encode(saved) { try? data.write(to: url, options: .atomic) }
+        do {
+            try JSONEncoder().encode(saved).write(to: url, options: .atomic)
+        } catch {
+            Log.write("session: could not save the column order: \(error.localizedDescription)")
+        }
     }
 
     /// The saved strip for a key, falling back to any strip saved for the same display

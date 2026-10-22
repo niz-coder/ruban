@@ -33,7 +33,7 @@ final class ScrollTap {
     /// Installs or removes the tap to match the settings and the state of tiling. Main thread.
     func refresh() {
         let settings = Settings.shared, wm = WindowManager.shared
-        let enabled = settings.scrollWithModifiers && wm.running && !wm.paused
+        let enabled = settings.scrollWithModifiers && wm.running && !wm.paused && !wm.trustLost
         lock.lock()
         config = Config(enabled: enabled, wanted: settings.modifiers.flags)
         filter.invert = settings.invertScroll
@@ -48,7 +48,10 @@ final class ScrollTap {
         guard let tap = CGEvent.tapCreate(tap: .cgSessionEventTap, place: .headInsertEventTap, options: .defaultTap,
                                           eventsOfInterest: mask, callback: { _, type, event, _ in
             ScrollTap.shared.handle(type, event)
-        }, userInfo: nil) else { return }
+        }, userInfo: nil) else {
+            Log.write("scroll tap: macOS refused it, modifier + scroll will not move the strip")
+            return
+        }
         let source = CFMachPortCreateRunLoopSource(nil, tap, 0)
         let ready = DispatchSemaphore(value: 0)
         let thread = Thread { [self] in

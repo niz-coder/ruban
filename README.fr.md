@@ -98,7 +98,11 @@ sont `$` et `^`, à droite du P.
 | ⌃⌥ T | Faire flotter / re-tuiler la fenêtre |
 | ⌃⌥ P / ⌃⌥⇧ P | Épingler au bord gauche / droit |
 | ⌃⌥ N | Envoyer à l'écran suivant |
-| ⌃⌥ Q | Mettre Ruban en pause (toutes les fenêtres reviennent à l'écran) |
+| ⌃⌥ Q | Mettre Ruban en pause : toutes les fenêtres reviennent à l'écran, et ⌃⌥ Q à nouveau remet chacune à sa place |
+
+Si Ruban plante ou est forcé à quitter, un petit gardien lancé avec lui ramène à l'écran les fenêtres
+qu'il avait garées au bord. Avec plusieurs écrans, une fenêtre n'est jamais garée sur un bord qui
+touche un autre écran.
 
 Le détail technique (API privées utilisées, architecture, développement) est dans le
 [README anglais](README.md#how-it-works).
